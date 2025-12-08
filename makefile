@@ -2,7 +2,7 @@
 COMPILER     := nvcc
 INCLUDE      := -I. -I/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/hdf5-1.14.5-iyjsbrml3dbr3l7cp65dgeclqlyfcdnn/include -I/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/gsl-2.8-pjzdxlsptkmjuvnrxif5x7ellp7rab3c/include -I/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/fftw-3.3.10-3yw4wbosrsa2257uitrgpge6a3mfw7ck/include -I../LATfield2 -I/users/adamek/local_arm/include -I../class_public/include -I../class_public/external/HyRec2020 -I../class_public/external/RecfastCLASS -I../class_public/external/heating # -I/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/cuda-12.6.2-csv6jo3czkfdk46ep7pmm6ipo3yjlbjj/include  # add the path to LATfield2 and other libraries (if necessary)
 LIB          := -L/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/hdf5-1.14.5-iyjsbrml3dbr3l7cp65dgeclqlyfcdnn/lib -L/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/gsl-2.8-pjzdxlsptkmjuvnrxif5x7ellp7rab3c/lib -L/users/adamek/local_arm/lib -L/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/fftw-3.3.10-3yw4wbosrsa2257uitrgpge6a3mfw7ck/lib -lfftw3f -lm -lhdf5 -lgsl -lgslcblas -lchealpix -lcfitsio -lclass -lcufft # -L/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/cuda-12.6.2-csv6jo3czkfdk46ep7pmm6ipo3yjlbjj/lib64 -lcufft -lcufftw
-HPXCXXLIB    := -lhealpix_cxx -lcfitsio
+HPXCXXLIB    := -I/users/adamek/local_arm/include/healpix_cxx -lhealpix_cxx
 
 # target and source
 EXEC         := gevolution
@@ -27,10 +27,12 @@ DGEVOLUTION  += -DCOLORTERMINAL
 DGEVOLUTION  += -DHAVE_CLASS    # requires LIB -lclass
 DGEVOLUTION  += -DHAVE_HEALPIX  # requires LIB -lchealpix
 DGEVOLUTION  += -DGRADIENT_ORDER=2
+#DGEVOLUTION  += -DPCL_EXTRA_CAPACITY=8388608
 #DGEVOLUTION  += -DDEBUG_ALIGNMENT
 
 # further compiler options
-OPT          := -O2 -std=c++17 -g -ccbin mpic++ -arch=sm_90 --extended-lambda -Xcompiler -fopenmp
+OPT          := -O3 -std=c++17 -g -ccbin mpic++ -arch=sm_90 --extended-lambda -Xcompiler -fopenmp
+OPT_GCC	     := -O3 -std=c++17 -g -fopenmp
 
 $(EXEC): $(SOURCE) $(HEADERS) makefile
 	$(COMPILER) $< -o $@ $(OPT) $(DLATFIELD2) $(DGEVOLUTION) $(INCLUDE) $(LIB)
@@ -39,10 +41,13 @@ unit-tests: unit_tests.cu $(HEADERS) makefile
 	$(COMPILER) $< -o $@ $(OPT) $(DLATFIELD2) $(DGEVOLUTION) $(INCLUDE) $(LIB) -DGADGET_LENGTH_CONVERSION=1 -DGADGET_VELOCITY_CONVERSION=1
 	
 lccat: lccat.cpp
-	$(COMPILER) $< -o $@ $(OPT) $(DGEVOLUTION) $(INCLUDE)
+	g++ $< -o $@ $(OPT_GCC) $(DGEVOLUTION) $(INCLUDE)
 	
 lcmap: lcmap.cpp
-	$(COMPILER) $< -o $@ $(OPT) -fopenmp $(DGEVOLUTION) $(INCLUDE) $(LIB) $(HPXCXXLIB)
+	g++ $< -o $@ $(OPT_GCC) $(DGEVOLUTION) $(INCLUDE) $(LIB) $(HPXCXXLIB)
+
+express-setup: express_setup.cu $(HEADERS) makefile
+	$(COMPILER) $< -o $@ $(OPT) $(DLATFIELD2) $(DGEVOLUTION) $(INCLUDE) $(LIB)
 
 run-tests: unit-tests
 	rm -f test_output_*
@@ -50,9 +55,9 @@ run-tests: unit-tests
 
 run: $(EXEC)
 	rsync -av ./$(EXEC) /capstor/scratch/cscs/adamek/testing/.
-	export OMP_NUM_THREADS=36
+	export OMP_NUM_THREADS=72
 	export OMP_PLACES=cores
-	srun -N 1 -n 8 --cpus-per-task=36 -C gpu -A sm97 --time=5:00 --partition=debug --hint=exclusive --cpu-bind=socket ./mps-wrapper.sh /capstor/scratch/cscs/adamek/testing/$(EXEC) -n 4 -m 2 -s /capstor/scratch/cscs/adamek/testing/settings.ini
+	srun -N 1 -n 4 --cpus-per-task=72 -C gpu -A sm97 --time=5:00 --partition=debug --hint=exclusive --cpu-bind=socket ./mps-wrapper.sh /capstor/scratch/cscs/adamek/testing/$(EXEC) -n 2 -m 2 -s /capstor/scratch/cscs/adamek/testing/settings.ini -p /capstor/scratch/cscs/adamek/testing/test.pre
 
 profile: $(EXEC)
 	rsync -av ./$(EXEC) /capstor/scratch/cscs/adamek/testing/.
@@ -60,6 +65,13 @@ profile: $(EXEC)
 	export OMP_NUM_THREADS=36
 	export OMP_PLACES=cores
 	srun -N 2 -n 16 --cpus-per-task=36 -C gpu -A sm97 --time=12:00 --partition=debug --hint=exclusive --cpu-bind=socket ./mps-wrapper.sh ./nsys_wrapper.sh /capstor/scratch/cscs/adamek/testing/$(EXEC) -n 4 -m 4 -s /capstor/scratch/cscs/adamek/testing/benchmark.ini
+
+scaling-test: $(EXEC)
+	rsync -av ./$(EXEC) /capstor/scratch/cscs/adamek/testing/.
+	export LD_LIBRARY_PATH=$$LD_LIBRARY_PATH:/users/adamek/local_arm/lib
+	export OMP_NUM_THREADS=72
+	export OMP_PLACES=cores
+	srun -N 9 -n 36 --cpus-per-task=72 -C gpu -A sm97 --time=19:00 --mem=192G --partition=normal --hint=exclusive --cpu-bind=socket ./mps-wrapper.sh ./nsys_wrapper.sh /capstor/scratch/cscs/adamek/testing/$(EXEC) -n 6 -m 6 -s /capstor/scratch/cscs/adamek/testing/scaling-test.ini
 
 clean:
 	-rm -f $(EXEC) lccat lcmap unit-tests

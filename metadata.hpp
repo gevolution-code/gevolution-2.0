@@ -72,6 +72,7 @@
 
 #define ICFLAG_CORRECT_DISPLACEMENT 1
 #define ICFLAG_KSPHERE              2
+#define ICFLAG_EXPRESSREADER		4
 
 // Identifiers for IC generator modules
 #define ICGEN_BASIC                 0

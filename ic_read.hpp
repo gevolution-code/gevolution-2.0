@@ -90,7 +90,8 @@ void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fou
 	filename.reserve(PARAM_MAX_LENGTH);
 	hdr.npart[1] = 0;
 	
-	projection_init(phi);
+	//projection_init(phi);
+	thrust::fill_n(thrust::device, phi->data(), phi->lattice().sitesLocalGross(), Real(0));
 	
 	if (ic.z_ic > -1.)
 		a = 1. / (1. + ic.z_ic);
@@ -120,6 +121,20 @@ void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fou
 		free(dummy2);*/
 		COUT << " error: HDF5 input not supported for CDM particles!" << endl;
 	}
+	else if (ic.flags & ICFLAG_EXPRESSREADER)
+	{
+		filename.assign(ic.pclfile[0]);
+		pcls_cdm->loadGadget2_express(filename, hdr);
+		
+		i = hdr.npart[1];
+		parallel.sum(i);
+		sim.numpcl[0] = i;
+
+		if (sim.baryon_flag == 1)
+			pcls_cdm->parts_info()->mass = cosmo.Omega_cdm / (Real) sim.numpcl[0];
+		else
+			pcls_cdm->parts_info()->mass = (cosmo.Omega_cdm + cosmo.Omega_b) / (Real) sim.numpcl[0];
+	}
 	else
 	{
 		i = 0;
@@ -143,6 +158,15 @@ void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fou
 			}
 		}
 		while (i < hdr.num_files);
+
+		// sanity check: make sure number of particles summed over MPI ranks matches number in header
+		count = pcls_cdm->num_particles();
+		parallel.sum(count);
+		if (count != sim.numpcl[0])
+		{
+			COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": total number of CDM particles read (" << count << ") does not match number in Gadget2 headers (" << sim.numpcl[0] << ")!" << endl;
+			throw std::runtime_error("Mismatch in number of CDM particles read from Gadget2 files");
+		}
 		
 		if (sim.baryon_flag == 1)
 			pcls_cdm->parts_info()->mass = cosmo.Omega_cdm / (Real) sim.numpcl[0];
@@ -152,6 +176,8 @@ void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fou
 	
 	COUT << " " << sim.numpcl[0] << " cdm particles read successfully." << endl;
 	maxvel[0] = pcls_cdm->updateVel(update_q_functor(), 0., &phi, 1, f_params);
+
+	COUT << " max. |q|/(m a) for cdm particles after IC read: " << maxvel[0] << endl;
 	
 	if (sim.baryon_flag == 1)
 	{
@@ -277,12 +303,17 @@ void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fou
 	}
 	else
 	{
-		projection_init(source);
+		//projection_init(source);
+		COUT << " computing particle-mesh projection for initial potential..." << endl;
+		thrust::fill_n(thrust::device, source->data(), source->lattice().sitesLocalGross(), Real(0));
 		scalarProjectionCIC_project(pcls_cdm, source);
 		if (sim.baryon_flag)
 			scalarProjectionCIC_project(pcls_b, source);	
 		scalarProjectionCIC_comm(source);
+
+		//source->saveHDF5("source_initial.h5");
 	
+		COUT << " solving for initial potential..." << endl;
 		plan_source->execute(FFT_FORWARD);
 	
 		kFT.first();
@@ -291,6 +322,8 @@ void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fou
 				
 		solveModifiedPoissonFT(*scalarFT, *scalarFT, fourpiG / a, 3. * sim.gr_flag * (Hconf(a, fourpiG, cosmo) * Hconf(a, fourpiG, cosmo) + fourpiG * cosmo.Omega_m / a));
 		plan_phi->execute(FFT_BACKWARD);
+
+		//phi->saveHDF5("phi_initial.h5");
 	}
 
 	phi->updateHalo();
@@ -699,27 +732,37 @@ void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fou
 	}
 	else
 	{
-		projection_init(Bi);
-		projection_T0i_project(pcls_cdm, Bi, phi);
-		if (sim.baryon_flag)
-			projection_T0i_project(pcls_b, Bi, phi);
-		projection_T0i_comm(Bi);
-		plan_Bi->execute(FFT_FORWARD);
-		projectFTvector(*BiFT, *BiFT, fourpiG / (double) sim.numpts / (double) sim.numpts);	
-		plan_Bi->execute(FFT_BACKWARD);	
-		Bi->updateHalo();
+		if (sim.gr_flag > 0 || sim.vector_flag == VECTOR_PARABOLIC)
+		{
+			//projection_init(Bi);
+			COUT << " computing initial vector metric perturbations..." << endl;
+			thrust::fill_n(thrust::device, Bi->data(), 3*Bi->lattice().sitesLocalGross(), Real(0));
+			projection_T0i_project(pcls_cdm, Bi, phi);
+			if (sim.baryon_flag)
+				projection_T0i_project(pcls_b, Bi, phi);
+			projection_T0i_comm(Bi);
+			plan_Bi->execute(FFT_FORWARD);
+			projectFTvector(*BiFT, *BiFT, fourpiG / (double) sim.numpts / (double) sim.numpts);	
+			plan_Bi->execute(FFT_BACKWARD);	
+			Bi->updateHalo();
+		}
 		
-		projection_init(Sij);
-		projection_Tij_project(pcls_cdm, Sij, a, phi);
-		if (sim.baryon_flag)
-			projection_Tij_project(pcls_b, Sij, a, phi);
-		projection_Tij_comm(Sij);
-	
-		prepareFTsource(*phi, *Sij, *Sij, 2. * fourpiG / a / (double) sim.numpts / (double) sim.numpts);	
-		plan_Sij->execute(FFT_FORWARD);	
-		projectFTscalar(*SijFT, *scalarFT);
-		plan_chi->execute(FFT_BACKWARD);		
-		chi->updateHalo();
+		if (sim.gr_flag > 0)
+		{
+			//projection_init(chi);
+			COUT << " computing initial scalar metric perturbation chi..." << endl;
+			thrust::fill_n(thrust::device, Sij->data(), 6*Sij->lattice().sitesLocalGross(), Real(0));
+			projection_Tij_project(pcls_cdm, Sij, a, phi);
+			if (sim.baryon_flag)
+				projection_Tij_project(pcls_b, Sij, a, phi);
+			projection_Tij_comm(Sij);
+		
+			prepareFTsource(*phi, *Sij, *Sij, 2. * fourpiG / a / (double) sim.numpts / (double) sim.numpts);	
+			plan_Sij->execute(FFT_FORWARD);	
+			projectFTscalar(*SijFT, *scalarFT);
+			plan_chi->execute(FFT_BACKWARD);		
+			chi->updateHalo();
+		}
 	}
 
 	if (ic.restart_cycle >= 0)

@@ -677,13 +677,16 @@ int main(int argc, char **argv)
 #endif
 		}
 
-		nvtxRangePushA("offload Tij projection to GPU");
-		f_params[0] = a;
-		f_params[1] = 1.;
-		projection_Tij_project_Async(&pcls_cdm, project_Tij_fields, 2, f_params);
-		if (sim.baryon_flag)
-			projection_Tij_project_Async(&pcls_b, project_Tij_fields, 2, f_params);
-		nvtxRangePop();
+		if (sim.gr_flag > 0 || sim.vector_flag == VECTOR_PARABOLIC)
+		{
+			nvtxRangePushA("offload Tij projection to GPU");
+			f_params[0] = a;
+			f_params[1] = 1.;
+			projection_Tij_project_Async(&pcls_cdm, project_Tij_fields, 2, f_params);
+			if (sim.baryon_flag)
+				projection_Tij_project_Async(&pcls_b, project_Tij_fields, 2, f_params);
+			nvtxRangePop();
+		}
 		
 		nvtxRangePushA("solveModifiedPoissonFT");
 		if (sim.gr_flag == 0)
@@ -696,17 +699,20 @@ int main(int argc, char **argv)
 		}
 		nvtxRangePop();
 
-		nvtxRangePushA("sync and finalize Tij projection");
-		auto success = cudaDeviceSynchronize();
-
-		if (success != cudaSuccess)
+		if (sim.gr_flag > 0 || sim.vector_flag == VECTOR_PARABOLIC)
 		{
-			std::cerr << "CUDA kernel failed: " << cudaGetErrorString(success) << std::endl;
-        	throw std::runtime_error("Error in CUDA kernel called via projection_Tij_project_Async");
-		}
+			nvtxRangePushA("sync and finalize Tij projection");
+			auto success = cudaDeviceSynchronize();
 
-		projection_Tij_comm(&Sij);
-		nvtxRangePop();
+			if (success != cudaSuccess)
+			{
+				std::cerr << "CUDA kernel failed: " << cudaGetErrorString(success) << std::endl;
+				throw std::runtime_error("Error in CUDA kernel called via projection_Tij_project_Async");
+			}
+
+			projection_Tij_comm(&Sij);
+			nvtxRangePop();
+		}
 
 		if (sim.gr_flag == 0 || dtau_old > 0.)
 		{		
@@ -731,93 +737,107 @@ int main(int argc, char **argv)
 		if (kFT.setCoord(0, 0, 0))
 			phi_hom = scalarFT(kFT).real();
 		
-		nvtxRangePushA("Solve chi");
-		nvtxRangePushA("prepareFTsource");
-		prepareFTsource(phi, Sij, Sij, 2. * fourpiG * dx * dx / a);  // prepare nonlinear source for additional equations
-		nvtxRangePop();
+		if (sim.gr_flag > 0 || sim.vector_flag == VECTOR_PARABOLIC
+#ifdef CHECK_B
+			|| true
+#endif
+#ifdef HAVE_CLASS
+			|| (sim.radiation_flag > 0 && a < 1. / (sim.z_switch_linearchi + 1.))
+#endif		
+		)
+		{
+			nvtxRangePushA("Solve chi");
+			nvtxRangePushA("prepareFTsource");
+			prepareFTsource(phi, Sij, Sij, 2. * fourpiG * dx * dx / a);  // prepare nonlinear source for additional equations
+			nvtxRangePop();
 
 #ifdef BENCHMARK
-		ref2_time= MPI_Wtime();
+			ref2_time= MPI_Wtime();
 #endif		
-		nvtxRangePushA("FFT forward Sij");
-		plan_Sij.execute(FFT_FORWARD);  // go to k-space
-		nvtxRangePop();
+			nvtxRangePushA("FFT forward Sij");
+			plan_Sij.execute(FFT_FORWARD);  // go to k-space
+			nvtxRangePop();
 #ifdef BENCHMARK
-		fft_time += MPI_Wtime() - ref2_time;
-		fft_count += 6;
+			fft_time += MPI_Wtime() - ref2_time;
+			fft_count += 6;
 #endif
 
-		if (sim.vector_flag == VECTOR_ELLIPTIC)
-		{
-			nvtxRangePushA("Zero T0i");
-			//projection_init(&Bi);
-			thrust::fill_n(thrust::device, Bi.data(), 3*lat.sitesLocalGross(), Real(0));
-			nvtxRangePop();
-			//projection_T0i_project(&pcls_cdm, &Bi, &phi);
-			//if (sim.baryon_flag)
-			//	projection_T0i_project(&pcls_b, &Bi, &phi);
-			for (int i = 0; i < cosmo.num_ncdm; i++)
+			if (sim.vector_flag == VECTOR_ELLIPTIC)
 			{
-				if (a >= 1. / (sim.z_switch_Bncdm[i] + 1.) && sim.numpcl[1+sim.baryon_flag+i] > 0)
+				nvtxRangePushA("Zero T0i");
+				//projection_init(&Bi);
+				thrust::fill_n(thrust::device, Bi.data(), 3*lat.sitesLocalGross(), Real(0));
+				nvtxRangePop();
+				//projection_T0i_project(&pcls_cdm, &Bi, &phi);
+				//if (sim.baryon_flag)
+				//	projection_T0i_project(&pcls_b, &Bi, &phi);
+				for (int i = 0; i < cosmo.num_ncdm; i++)
 				{
-					nvtxRangePushA("T0i projection of ncdm particle species");
-					projection_T0i_project(pcls_ncdm+i, &Bi, &phi);
-					nvtxRangePop();
+					if (a >= 1. / (sim.z_switch_Bncdm[i] + 1.) && sim.numpcl[1+sim.baryon_flag+i] > 0)
+					{
+						nvtxRangePushA("T0i projection of ncdm particle species");
+						projection_T0i_project(pcls_ncdm+i, &Bi, &phi);
+						nvtxRangePop();
+					}
 				}
+				//projection_T0i_comm(&Bi);
+				nvtxRangePushA("offload T0i projection to GPU");
+				f_params[0] = 1.;
+				projection_T0i_project_Async(&pcls_cdm, project_T0i_fields, 2, f_params);
+				if (sim.baryon_flag)
+					projection_T0i_project_Async(&pcls_b, project_T0i_fields, 2, f_params);
+				nvtxRangePop();
 			}
-			//projection_T0i_comm(&Bi);
-			nvtxRangePushA("offload T0i projection to GPU");
-			f_params[0] = 1.;
-			projection_T0i_project_Async(&pcls_cdm, project_T0i_fields, 2, f_params);
-			if (sim.baryon_flag)
-				projection_T0i_project_Async(&pcls_b, project_T0i_fields, 2, f_params);
-			nvtxRangePop();
-		}
 
-		nvtxRangePushA("projectFTscalar");
+			nvtxRangePushA("projectFTscalar");
 #ifdef HAVE_CLASS
-		if (sim.radiation_flag > 0 && a < 1. / (sim.z_switch_linearchi + 1.))
-		{
-			prepareFTchiLinear(class_background, class_perturbs, scalarFT, sim, ic, cosmo, fourpiG, a, 1., zetaFT);
-			projectFTscalar(SijFT, scalarFT, 1);
-		}
-		else
-#endif		
-		projectFTscalar(SijFT, scalarFT);  // construct chi by scalar projection (k-space)
-		nvtxRangePop();
-
-		if (sim.vector_flag == VECTOR_ELLIPTIC)
-		{
-			nvtxRangePushA("sync and finalize T0i projection");
-			auto success_T0i = cudaDeviceSynchronize();
-
-			if (success_T0i != cudaSuccess)
+			if (sim.radiation_flag > 0 && a < 1. / (sim.z_switch_linearchi + 1.))
 			{
-				std::cerr << "CUDA kernel failed: " << cudaGetErrorString(success_T0i) << std::endl;
-				throw std::runtime_error("Error in CUDA kernel called via projection_T0i_project_Async");
+				prepareFTchiLinear(class_background, class_perturbs, scalarFT, sim, ic, cosmo, fourpiG, a, 1., zetaFT);
+				projectFTscalar(SijFT, scalarFT, 1);
+			}
+			else
+#endif		
+			projectFTscalar(SijFT, scalarFT);  // construct chi by scalar projection (k-space)
+			nvtxRangePop();
+
+			if (sim.vector_flag == VECTOR_ELLIPTIC)
+			{
+				nvtxRangePushA("sync and finalize T0i projection");
+				auto success_T0i = cudaDeviceSynchronize();
+
+				if (success_T0i != cudaSuccess)
+				{
+					std::cerr << "CUDA kernel failed: " << cudaGetErrorString(success_T0i) << std::endl;
+					throw std::runtime_error("Error in CUDA kernel called via projection_T0i_project_Async");
+				}
+
+				projection_T0i_comm(&Bi);
+				nvtxRangePop();
 			}
 
-			projection_T0i_comm(&Bi);
+#ifdef BENCHMARK
+			ref2_time= MPI_Wtime();
+#endif	
+			nvtxRangePushA("FFT backward chi");
+			plan_chi.execute(FFT_BACKWARD);	 // go back to position space
+			nvtxRangePop();
+#ifdef BENCHMARK
+			fft_time += MPI_Wtime() - ref2_time;
+			fft_count++;
+#endif	
+			nvtxRangePushA("Update halo chi");
+			chi.updateHalo();  // communicate halo values
+			nvtxRangePop();
 			nvtxRangePop();
 		}
-
-#ifdef BENCHMARK
-		ref2_time= MPI_Wtime();
-#endif	
-		nvtxRangePushA("FFT backward chi");
-		plan_chi.execute(FFT_BACKWARD);	 // go back to position space
-		nvtxRangePop();
-#ifdef BENCHMARK
-		fft_time += MPI_Wtime() - ref2_time;
-		fft_count++;
-#endif	
-		nvtxRangePushA("Update halo chi");
-		chi.updateHalo();  // communicate halo values
-		nvtxRangePop();
-		nvtxRangePop();
 
 		nvtxRangePushA("Solve B (k-space)");
-		if (sim.vector_flag == VECTOR_ELLIPTIC)
+		if (sim.vector_flag == VECTOR_ELLIPTIC
+#ifndef CHECK_B
+			&& sim.gr_flag > 0
+#endif
+		)
 		{
 #ifdef BENCHMARK
 			ref2_time= MPI_Wtime();
@@ -838,7 +858,7 @@ int main(int argc, char **argv)
 			nvtxRangePop();
 #endif
 		}
-		else
+		else if (sim.vector_flag == VECTOR_PARABOLIC)
 		{
 			nvtxRangePushA("evolveFTvector");
 			evolveFTvector(SijFT, BiFT, a * a * dtau_old);  // evolve B using vector projection (k-space)

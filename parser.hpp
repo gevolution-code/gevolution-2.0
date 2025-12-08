@@ -793,6 +793,11 @@ int parseMetadata(parameter * & params, const int numparam, metadata & sim, cosm
 			ic.generator = ICGEN_BASIC;
 		else if ((par_string[0] == 'R' || par_string[0] == 'r') && par_string[2] != 'L' && par_string[2] != 'l')
 			ic.generator = ICGEN_READ_FROM_DISK;
+		else if ((par_string[0] == 'E' || par_string[0] == 'e'))
+		{
+			ic.generator = ICGEN_READ_FROM_DISK;
+			ic.flags |= ICFLAG_EXPRESSREADER;
+		}
 #ifdef ICGEN_PREVOLUTION
 		else if (par_string[0] == 'P' || par_string[0] == 'p')
 			ic.generator = ICGEN_PREVOLUTION;

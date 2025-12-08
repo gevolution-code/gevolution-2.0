@@ -58,6 +58,7 @@ class perfParticles_gevolution: public perfParticles<part, part_info>
 		template <int IDlog_scatter = 0>
 		void saveGadget2(string filename, gadget2_header & hdr, lightcone_geometry & lightcone, double dist, double dtau, double dtau_old, double dadtau, double vertex[MAX_INTERSECTS][3], const int vertexcount, set<long> & IDbacklog, vector<long> * IDprelog, Field<Real> * phi, const int tracer_factor = 1);
 		void loadGadget2(string filename, gadget2_header & hdr);
+		void loadGadget2_express(string filename, gadget2_header & hdr);
 
 		__host__ __device__ void bufferTracerParticle(int row, int idx, double dtau_pos, double dtau_vel, double a, double boxsize, Field<Real> * phi, float * posdata, float * veldata, long * IDs, unsigned long long int buffer_idx, float * pos_offset = nullptr);
 
@@ -301,6 +302,13 @@ __global__ void count_tracer_particles(perfParticles_gevolution<part, part_info>
 	int row = blockIdx.x;
 	int thread_id = threadIdx.x;
 	long local_count = 0;
+	constexpr int W = 32; // warp size
+	const int lane = thread_id & (W - 1);
+	const int warp_id = thread_id / W;
+	constexpr int nWarps = 4; // 128 / W
+	unsigned mask = __activemask();
+
+	__shared__ int smem[nWarps];
 
 	for (int idx = thread_id; idx < pcl->row_buffers_[row].count; idx += 128)
 	{
@@ -308,11 +316,37 @@ __global__ void count_tracer_particles(perfParticles_gevolution<part, part_info>
 			local_count++;
 	}
 
-	cuda::atomic_ref<long, cuda::thread_scope_device> count_ref(*npart);
-	count_ref.fetch_add(local_count);
+	#pragma unroll
+	for (int ofs = 16; ofs > 0; ofs >>= 1)  // 16,8,4,2,1 = log2(32) steps
+	{
+		local_count += __shfl_down_sync(mask, local_count, ofs);
+	}
 
-	cuda::atomic_ref<int, cuda::thread_scope_device> row_count_ref(npart_row[row]);
-	row_count_ref.fetch_add(local_count);
+	if (lane == 0)
+	{
+		smem[warp_id] = local_count;
+	}
+	__syncthreads();
+
+	if (warp_id == 0)
+	{
+		local_count = (lane < nWarps) ? smem[lane] : 0;
+
+		#pragma unroll
+        for (int ofs = 2; ofs > 0; ofs >>= 1)  // 2,1 = log2(4) steps, blockDim.x = 128 => nWarps = 4
+		{
+			local_count += __shfl_down_sync(mask, local_count, ofs);
+		}
+
+		if (lane == 0 && local_count > 0)
+		{
+			cuda::atomic_ref<long, cuda::thread_scope_device> count_ref(*npart);
+			count_ref.fetch_add(local_count);
+
+			cuda::atomic_ref<int, cuda::thread_scope_device> row_count_ref(npart_row[row]);
+			row_count_ref.fetch_add(local_count);
+		}
+	}
 }
 
 // CUDA kernel to write particles to buffers
@@ -440,11 +474,20 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 	int row_start = 0, row_count;
 	uint32_t blocksize;
 	unsigned long long int buffer_count;
-	int npart_row[this->num_row_buffers_];
+	int * npart_row;
+	long * d_npart;
+	int * d_npart_row;
+	unsigned long long int * d_buffer_count;
 
 	posdata = (float *) malloc(3 * sizeof(float) * PCLBUFFER);
 	veldata = (float *) malloc(3 * sizeof(float) * PCLBUFFER);
 	IDs = (long *) malloc(sizeof(int64_t) * PCLBUFFER);
+
+	npart_row = (int *) malloc(sizeof(int) * this->num_row_buffers_);
+
+	cudaMalloc(&d_npart, sizeof(long));
+	cudaMalloc(&d_npart_row, sizeof(int) * this->num_row_buffers_);
+	cudaMalloc(&d_buffer_count, sizeof(unsigned long long int));
 
 	if (posdata == NULL || veldata == NULL || IDs == NULL)
 	{
@@ -459,9 +502,12 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 	{
 		npart_row[row] = 0;
 	}
+
+	cudaMemcpy(d_npart, &npart, sizeof(long), cudaMemcpyHostToDevice);
+	cudaMemcpy(d_npart_row, npart_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyHostToDevice);
 	
 	// count particles
-	count_tracer_particles<part, part_info><<<this->num_row_buffers_, 128>>>(this, tracer_factor, &npart, npart_row);
+	count_tracer_particles<part, part_info><<<this->num_row_buffers_, 128>>>(this, tracer_factor, d_npart, d_npart_row);
 
 	auto success = cudaDeviceSynchronize();
 
@@ -469,6 +515,9 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 	{
 		throw std::runtime_error("CUDA error in count_tracer_particles");
 	}
+
+	cudaMemcpy(&npart, d_npart, sizeof(long), cudaMemcpyDeviceToHost);
+	cudaMemcpy(npart_row, d_npart_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyDeviceToHost);
 
 	nvtxRangePop();
 
@@ -549,9 +598,10 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 			if (count > 0)
 			{
 				nvtxRangePushA("buffer particles");
-				buffer_count = 0;
+				//buffer_count = 0;
+				cudaMemset(d_buffer_count, 0, sizeof(unsigned long long int));
 
-				buffer_tracer_particles<<<row_count, 128>>>(this, tracer_factor, dtau_pos, dtau_vel, hdr.time, hdr.BoxSize, phi, posdata, veldata, IDs, row_start, &buffer_count);
+				buffer_tracer_particles<<<row_count, 128>>>(this, tracer_factor, dtau_pos, dtau_vel, hdr.time, hdr.BoxSize, phi, posdata, veldata, IDs, row_start, d_buffer_count);
 
 				success = cudaDeviceSynchronize();
 
@@ -559,6 +609,8 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 				{
 					throw std::runtime_error("CUDA error in buffer_tracer_particles");
 				}
+
+				cudaMemcpy(&buffer_count, d_buffer_count, sizeof(unsigned long long int), cudaMemcpyDeviceToHost);
 				nvtxRangePop();
 
 				nvtxRangePushA("write particles to disk");
@@ -583,6 +635,20 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 		{
 			COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": number of Gadget2 files does not match the number of tasks!" << endl;
 			return;
+		}
+
+		// check total number of particles makes sense
+		if (parallel.rank() == 0)
+		{
+			parallel.send<long>(npart, 1);
+			parallel.receive<long>(count, parallel.size()-1);
+			if (count != (long) hdr.npartTotal[1] + ((long) hdr.npartTotalHW[1] << 32)) cout << " error: number of particles in saveGadget2 does not match request!" << endl;
+		}
+		else
+		{
+			parallel.receive<long>(count, parallel.rank()-1);
+			count += npart;
+			parallel.send<long>(count, (parallel.rank()+1)%parallel.size());
 		}
 
 		hdr.npart[1] = (uint32_t) npart;
@@ -644,9 +710,10 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 				IDs = new_IDs;
 			}
 			
-			buffer_count = 0;
+			//buffer_count = 0;
+			cudaMemset(d_buffer_count, 0, sizeof(unsigned long long int));
 
-			buffer_tracer_particles<<<row_count, 128>>>(this, tracer_factor, dtau_pos, dtau_vel, hdr.time, hdr.BoxSize, phi, posdata, veldata, IDs, row_start, &buffer_count);
+			buffer_tracer_particles<<<row_count, 128>>>(this, tracer_factor, dtau_pos, dtau_vel, hdr.time, hdr.BoxSize, phi, posdata, veldata, IDs, row_start, d_buffer_count);
 
 			success = cudaDeviceSynchronize();
 
@@ -654,6 +721,7 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 			{
 				throw std::runtime_error("CUDA error in buffer_tracer_particles");
 			}
+			cudaMemcpy(&buffer_count, d_buffer_count, sizeof(unsigned long long int), cudaMemcpyDeviceToHost);
 			nvtxRangePop();
 
 			nvtxRangePushA("write particles to disk");
@@ -678,6 +746,11 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 	free(posdata);
 	free(veldata);
 	free(IDs);
+	free(npart_row);
+
+	cudaFree(d_npart);
+	cudaFree(d_npart_row);
+	cudaFree(d_buffer_count);
 }
 
 
@@ -1041,6 +1114,13 @@ __global__ void count_tracer_particles(perfParticles_gevolution<part, part_info>
 	int thread_id = threadIdx.x;
 	long local_count = 0;
 	long local_count_checkID = 0;
+	constexpr int W = 32; // warp size
+	const int lane = thread_id & (W - 1);
+	const int warp_id = thread_id / W;
+	constexpr int nWarps = 4; // 128 / W
+	unsigned mask = __activemask();
+
+	__shared__ int smem[2 * nWarps];
 
 	for (int idx = thread_id; idx < pcl->row_buffers_[row].count; idx += 128)
 	{
@@ -1064,16 +1144,43 @@ __global__ void count_tracer_particles(perfParticles_gevolution<part, part_info>
 		}
 	}
 
-	if (local_count > 0)
+	#pragma unroll
+	for (int ofs = 16; ofs > 0; ofs >>= 1)  // 16,8,4,2,1 = log2(32) steps
 	{
-		cuda::atomic_ref<long, cuda::thread_scope_device> count_ref(*npart);
-		count_ref.fetch_add(local_count);
+		local_count += __shfl_down_sync(mask, local_count, ofs);
+		local_count_checkID += __shfl_down_sync(mask, local_count_checkID, ofs);
+	}
 
-		cuda::atomic_ref<int, cuda::thread_scope_device> row_count_ref(npart_row[row]);
-		row_count_ref.fetch_add(local_count);
+	if (lane == 0)
+	{
+		smem[2 * warp_id] = local_count;
+		smem[2 * warp_id + 1] = local_count_checkID;
+	}
+	__syncthreads();
 
-		cuda::atomic_ref<int, cuda::thread_scope_device> row_count_checkID_ref(npart_checkID_row[row]);
-		row_count_checkID_ref.fetch_add(local_count_checkID);
+	if (warp_id == 0)
+	{
+		local_count = (lane < nWarps) ? smem[2 * lane] : 0;
+		local_count_checkID = (lane < nWarps) ? smem[2 * lane + 1] : 0;
+
+		#pragma unroll
+        for (int ofs = 2; ofs > 0; ofs >>= 1)  // 2,1 = log2(4) steps, blockDim.x = 128 => nWarps = 4
+		{
+			local_count += __shfl_down_sync(mask, local_count, ofs);
+			local_count_checkID += __shfl_down_sync(mask, local_count_checkID, ofs);
+		}
+
+		if (lane == 0 && local_count > 0)
+		{
+			cuda::atomic_ref<long, cuda::thread_scope_device> count_ref(*npart);
+			count_ref.fetch_add(local_count);
+
+			cuda::atomic_ref<int, cuda::thread_scope_device> row_count_ref(npart_row[row]);
+			row_count_ref.fetch_add(local_count);
+
+			cuda::atomic_ref<int, cuda::thread_scope_device> row_count_checkID_ref(npart_checkID_row[row]);
+			row_count_checkID_ref.fetch_add(local_count_checkID);
+		}
 	}
 }
 
@@ -1214,11 +1321,25 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 	MPI_Status status;
 	uint32_t blocksize;
 	unsigned long long int buffer_count1, buffer_count2;
-	int npart_row[this->num_row_buffers_];
-	int npart_checkID_row[this->num_row_buffers_];
+	int * npart_row;
+	int * npart_checkID_row;
 	Real domain[4];
 	Real inner = dist - 0.5 * dtau;
 	Real outer = dist + (0.5 + LIGHTCONE_IDCHECK_ZONE) * dtau_old;
+	long * d_npart;
+	unsigned long long int * d_buffer_count1;
+	unsigned long long int * d_buffer_count2;
+	int * d_npart_row;
+	int * d_npart_checkID_row;
+
+	npart_row = (int *) malloc(sizeof(int) * this->num_row_buffers_);
+	npart_checkID_row = (int *) malloc(sizeof(int) * this->num_row_buffers_);
+
+	cudaMalloc((void **) &d_npart, sizeof(long));
+	cudaMalloc((void **) &d_buffer_count1, sizeof(unsigned long long int));
+	cudaMalloc((void **) &d_buffer_count2, sizeof(unsigned long long int));
+	cudaMalloc((void **) &d_npart_row, sizeof(int) * this->num_row_buffers_);
+	cudaMalloc((void **) &d_npart_checkID_row, sizeof(int) * this->num_row_buffers_);
 
 	if (hdr.num_files != 1)
 	{
@@ -1248,8 +1369,12 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 		npart_checkID_row[row] = 0;
 	}
 
+	cudaMemcpy(d_npart, &npart, sizeof(long), cudaMemcpyHostToDevice);
+	cudaMemcpy(d_npart_row, npart_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_npart_checkID_row, npart_checkID_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyHostToDevice);
+
 	// count particles
-	count_tracer_particles<part, part_info><<<this->num_row_buffers_, 128>>>(this, tracer_factor, lightcone, inner, outer, dtau_old, vertex, vertexcount, &npart, npart_row, npart_checkID_row);
+	count_tracer_particles<part, part_info><<<this->num_row_buffers_, 128>>>(this, tracer_factor, lightcone, inner, outer, dtau_old, vertex, vertexcount, d_npart, d_npart_row, d_npart_checkID_row);
 
 	auto success = cudaDeviceSynchronize();
 
@@ -1257,6 +1382,14 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 	{
 		throw std::runtime_error("CUDA error in count_tracer_particles");
 	}
+
+	cudaMemcpy(&npart, d_npart, sizeof(long), cudaMemcpyDeviceToHost);
+	cudaMemcpy(npart_row, d_npart_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyDeviceToHost);
+	cudaMemcpy(npart_checkID_row, d_npart_checkID_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyDeviceToHost);
+
+	cudaFree(d_npart);
+	cudaFree(d_npart_row);
+	cudaFree(d_npart_checkID_row);
 
 	// first loop: collect IDs to be checked against IDbacklog
 	while (row_start < this->num_row_buffers_)
@@ -1284,9 +1417,10 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 
 		if (count > 0)
 		{
-			buffer_count1 = 0;
+			//buffer_count1 = 0;
+			cudaMemset(d_buffer_count1, 0, sizeof(unsigned long long int));
 
-			buffer_tracer_IDs<part, part_info><<<row_count, 128>>>(this, tracer_factor, lightcone, inner, outer, dtau_old, vertex, vertexcount, IDs, row_start, &buffer_count1);
+			buffer_tracer_IDs<part, part_info><<<row_count, 128>>>(this, tracer_factor, lightcone, inner, outer, dtau_old, vertex, vertexcount, IDs, row_start, d_buffer_count1);
 
 			success = cudaDeviceSynchronize();
 
@@ -1294,6 +1428,8 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 			{
 				throw std::runtime_error("CUDA error in buffer_tracer_IDs");
 			}
+
+			cudaMemcpy(&buffer_count1, d_buffer_count1, sizeof(unsigned long long int), cudaMemcpyDeviceToHost);
 
 			// check IDs against IDbacklog
 			reject = 0;
@@ -1411,9 +1547,11 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 
 			if (count > 0)
 			{
-				buffer_count1 = 0;
+				//buffer_count1 = 0;
+				cudaMemset(d_buffer_count1, 0, sizeof(unsigned long long int));
+				cudaMemcpy(d_buffer_count2, &buffer_count2, sizeof(unsigned long long int), cudaMemcpyHostToDevice);
 
-				buffer_tracer_particles<part, part_info, IDlog_scatter><<<row_count, 128>>>(this, tracer_factor, lightcone, (Real) dist, inner, outer, dtau, dtau_old, (double) hdr.time, dadtau, this->boxSize_[0], domain, phi, vertex, vertexcount, posdata, veldata, IDs, loginfo, row_start, &buffer_count1, &buffer_count2);
+				buffer_tracer_particles<part, part_info, IDlog_scatter><<<row_count, 128>>>(this, tracer_factor, lightcone, (Real) dist, inner, outer, dtau, dtau_old, (double) hdr.time, dadtau, this->boxSize_[0], domain, phi, vertex, vertexcount, posdata, veldata, IDs, loginfo, row_start, d_buffer_count1, d_buffer_count2);
 
 				success = cudaDeviceSynchronize();
 
@@ -1421,6 +1559,8 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 				{
 					throw std::runtime_error("CUDA error in buffer_tracer_particles");
 				}
+
+				cudaMemcpy(&buffer_count1, d_buffer_count1, sizeof(unsigned long long int), cudaMemcpyDeviceToHost);
 
 				if (buffer_count1 > 0)
 				{
@@ -1509,6 +1649,11 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 	}
 
 	free(IDs);
+	free(npart_row);
+	free(npart_checkID_row);
+
+	cudaFree(d_buffer_count1);
+	cudaFree(d_buffer_count2);
 }
 
 
@@ -1653,9 +1798,187 @@ void perfParticles_gevolution<part,part_info>::loadGadget2(string filename, gadg
 	float * veldata;
 	void * IDs;
 	MPI_File infile;
-	uint32_t count, npart = 0, nfile = 0;
+	uint32_t count, npart = 0;
 	MPI_Offset offset_pos, offset_vel, offset_ID;
 	MPI_Status status;
+	uint32_t blocksize;
+	double rescale_vel = 1. / GADGET_VELOCITY_CONVERSION;
+	uint64_t estimated_capacity = 0;
+	
+	posdata = (float *) malloc(3 * sizeof(float) * PCLBUFFER);
+	veldata = (float *) malloc(3 * sizeof(float) * PCLBUFFER);
+
+#if GADGET_ID_BYTES == 8
+	IDs = malloc(sizeof(int64_t) * PCLBUFFER);
+#else
+	IDs = malloc(sizeof(int32_t) * PCLBUFFER);
+#endif
+
+	unsigned long long int * d_buffer_idx;
+	cudaMalloc((void **) &d_buffer_idx, sizeof(unsigned long long int));
+
+	MPI_File_open(parallel.lat_world_comm(), filename.c_str(), MPI_MODE_RDONLY, MPI_INFO_NULL, &infile);
+
+	// check if file could be opened
+	if (infile == MPI_FILE_NULL)
+	{
+		COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": could not open file " << filename << "!" << endl;
+		return;
+	}
+
+	auto read_success = MPI_File_read_all(infile, &blocksize, 1, MPI_UNSIGNED, &status);
+
+	if (blocksize != sizeof(hdr) || read_success != MPI_SUCCESS)
+	{
+		COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": file type not recognized when reading Gadget2 file!" << endl;
+		MPI_File_close(&infile);
+		return;
+	}
+
+	read_success = MPI_File_read_all(infile, &hdr, sizeof(hdr), MPI_BYTE, &status);
+
+	if (read_success != MPI_SUCCESS)
+	{
+		COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": could not read header from file " << filename << "!" << endl;
+		MPI_File_close(&infile);
+		return;
+	}
+
+	estimated_capacity = (((uint64_t) hdr.npartTotal[1] + ((uint64_t) hdr.npartTotalHW[1] << 32)) / parallel.size()) + this->extra_capacity_;
+
+	rescale_vel /= sqrt(hdr.time);
+	offset_pos = (MPI_Offset) sizeof(hdr) + (MPI_Offset) (3 * sizeof(uint32_t));
+	offset_vel = offset_pos + ((MPI_Offset) hdr.npart[1]) * ((MPI_Offset) (3 * sizeof(float))) + (MPI_Offset) (2 * sizeof(uint32_t));
+	offset_ID = offset_vel + offset_vel - offset_pos;
+
+	MPI_File_seek(infile, offset_pos, MPI_SEEK_SET);
+
+	while (npart < hdr.npart[1])
+	{
+		count = (hdr.npart[1] - npart > PCLBUFFER) ? PCLBUFFER : (hdr.npart[1] - npart);
+
+		read_success = MPI_File_read_all(infile, posdata, 3 * count, MPI_FLOAT, &status);
+
+		if (read_success != MPI_SUCCESS)
+		{
+			COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": could not read particle positions from file " << filename << "!" << endl;
+			MPI_File_close(&infile);
+			return;
+		}
+
+		offset_pos += (MPI_Offset) (3 * count * sizeof(float));
+		MPI_File_seek(infile, offset_vel, MPI_SEEK_SET);
+		read_success = MPI_File_read_all(infile, veldata, 3 * count, MPI_FLOAT, &status);
+
+		if (read_success != MPI_SUCCESS)
+		{
+			COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": could not read particle velocities from file " << filename << "!" << endl;
+			MPI_File_close(&infile);
+			return;
+		}
+
+		offset_vel += (MPI_Offset) (3 * count * sizeof(float));
+		MPI_File_seek(infile, offset_ID, MPI_SEEK_SET);
+#if GADGET_ID_BYTES == 8
+		read_success = MPI_File_read_all(infile, IDs, count * sizeof(int64_t), MPI_BYTE, &status);
+		offset_ID += (MPI_Offset) (count * sizeof(int64_t));
+#else
+		read_success = MPI_File_read_all(infile, IDs, count * sizeof(int32_t), MPI_BYTE, &status);
+		offset_ID += (MPI_Offset) (count * sizeof(int32_t));
+#endif
+		MPI_File_seek(infile, offset_pos, MPI_SEEK_SET);
+
+		if (read_success != MPI_SUCCESS)
+		{
+			COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": could not read particle IDs from file " << filename << "!" << endl;
+			MPI_File_close(&infile);
+			return;
+		}
+
+#pragma omp parallel for
+		for (int i = 0; i < 3 * count; i++)
+		{
+			posdata[i] /= hdr.BoxSize;
+			while (posdata[i] < 0) posdata[i] += 1;
+			while (posdata[i] >= 1) posdata[i] -= 1;
+			veldata[i] *= hdr.time / rescale_vel;
+		}
+
+		int local_count = 0;
+
+#pragma omp parallel for reduction(+:local_count)
+		for (int i = 0; i < count; i++)
+		{
+			int coord[3];
+#ifdef SINGLE
+			this->getPartCoordLocal(posdata+3*i, coord);
+#else
+			double pos[3];
+			pos[0] = posdata[3*i];
+			pos[1] = posdata[3*i+1];
+			pos[2] = posdata[3*i+2];
+			this->getPartCoordLocal(pos, coord);
+#endif
+			if (coord[0] >= 0 && coord[0] < this->lat_size_local_[0] && coord[1] >= 0 && coord[1] < this->lat_size_local_[1] && coord[2] >= 0 && coord[2] < this->lat_size_local_[2])
+			{
+				local_count++;
+			}
+		}
+
+		if (this->num_particles_ + local_count > this->total_capacity_)
+		{
+			if (this->num_particles_ + local_count + this->extra_capacity_ > estimated_capacity)
+			{
+				estimated_capacity = this->num_particles_ + local_count + this->extra_capacity_;
+			}
+			this->resizeGlobalBuffers(estimated_capacity);
+			//cerr << " rank#" << parallel.rank() << ": resized particle buffers to capacity " << this->total_capacity_ << endl;
+		}
+
+		if (local_count > 0)
+		{
+			unsigned long long int buffer_idx = this->num_particles_;
+			cudaMemcpy(d_buffer_idx, &buffer_idx, sizeof(unsigned long long int), cudaMemcpyHostToDevice);
+			
+			add_particles<part, part_info><<<count/128+1, 128>>>(this, posdata, veldata, IDs, count, d_buffer_idx);
+
+			auto success = cudaDeviceSynchronize();
+
+			if (success != cudaSuccess)
+			{
+				COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": CUDA error when loading particles!" << endl;
+				MPI_File_close(&infile);
+				throw std::runtime_error("CUDA error when loading particles!");
+			}
+
+			this->num_particles_ += local_count;
+		}
+		
+		npart += count;
+	}
+
+	MPI_File_close(&infile);
+
+	//cerr << " rank#" << parallel.rank() << ": loaded a total of " << this->num_particles_ << " particles." << endl;
+	this->updateRowBuffers();
+	
+	free(posdata);
+	free(veldata);
+	free(IDs);
+	cudaFree(d_buffer_idx);
+}
+
+
+// This particle load function assumes that each rank reads exactly one file, no MPI communication needed
+template <typename part, typename part_info>
+void perfParticles_gevolution<part,part_info>::loadGadget2_express(string filename, gadget2_header & hdr)
+{
+	float * posdata;
+	float * veldata;
+	void * IDs;
+	FILE * infile;
+	uint32_t count, npart = 0;
+	uint64_t offset_pos, offset_vel, offset_ID;
 	uint32_t blocksize;
 	double rescale_vel = 1. / GADGET_VELOCITY_CONVERSION;
 	
@@ -1668,148 +1991,118 @@ void perfParticles_gevolution<part,part_info>::loadGadget2(string filename, gadg
 	IDs = malloc(sizeof(int32_t) * PCLBUFFER);
 #endif
 
-	do
+	filename = filename.substr(0, filename.find_last_of('.')+1) + to_string(parallel.rank());
+
+	infile = fopen(filename.c_str(), "rb");
+	
+	// check if file could be opened
+	if (infile == NULL)
 	{
-		MPI_File_open(parallel.lat_world_comm(), filename.c_str(), MPI_MODE_RDONLY, MPI_INFO_NULL, &infile);
+		cout << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": could not open file " << filename << "!" << endl;
+		return;
+	}
 
-		// check if file could be opened
-		if (infile == MPI_FILE_NULL)
+	auto read_success = fread(&blocksize, 1, sizeof(blocksize), infile);
+
+	if (blocksize != sizeof(hdr) || read_success != sizeof(blocksize))
+	{
+		cout << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": file type not recognized when reading Gadget2 file!" << endl;
+		fclose(infile);
+		return;
+	}
+
+	read_success = fread(&hdr, 1, sizeof(hdr), infile);
+
+	if (read_success != sizeof(hdr))
+	{
+		cout << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": could not read header from file " << filename << "!" << endl;
+		fclose(infile);
+		return;
+	}
+
+	rescale_vel /= sqrt(hdr.time);
+	offset_pos = (uint64_t) sizeof(hdr) + (uint64_t) (3 * sizeof(uint32_t));
+	offset_vel = offset_pos + ((uint64_t) hdr.npart[1]) * ((uint64_t) (3 * sizeof(float))) + (uint64_t) (2 * sizeof(uint32_t));
+	offset_ID = offset_vel + offset_vel - offset_pos;
+
+	cout << " rank#" << parallel.rank() << ": loading " << hdr.npart[1] << " particles from file " << filename << endl;
+
+	fseek(infile, offset_pos, SEEK_SET);
+	while (npart < hdr.npart[1])
+	{
+		count = (hdr.npart[1] - npart > PCLBUFFER) ? PCLBUFFER : (hdr.npart[1] - npart);
+
+		read_success = fread(posdata, sizeof(float), 3 * count, infile);
+
+		if (read_success != 3 * count)
 		{
-			COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": could not open file " << filename << "!" << endl;
+			cout << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": could not read particle positions from file " << filename << "!" << endl;
+			fclose(infile);
 			return;
 		}
 
-		auto read_success = MPI_File_read_all(infile, &blocksize, 1, MPI_UNSIGNED, &status);
+		offset_pos += (uint64_t) (3 * count * sizeof(float));
+		fseek(infile, offset_vel, SEEK_SET);
+		read_success = fread(veldata, sizeof(float), 3 * count, infile);
 
-		if (blocksize != sizeof(hdr) || read_success != MPI_SUCCESS)
+		if (read_success != 3 * count)
 		{
-			COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": file type not recognized when reading Gadget2 file!" << endl;
-			MPI_File_close(&infile);
+			cout << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": could not read particle velocities from file " << filename << "!" << endl;
+			fclose(infile);
 			return;
 		}
 
-		read_success = MPI_File_read_all(infile, &hdr, sizeof(hdr), MPI_BYTE, &status);
-
-		if (read_success != MPI_SUCCESS)
-		{
-			COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": could not read header from file " << filename << "!" << endl;
-			MPI_File_close(&infile);
-			return;
-		}
-
-		rescale_vel /= sqrt(hdr.time);
-		offset_pos = (MPI_Offset) sizeof(hdr) + (MPI_Offset) (3 * sizeof(uint32_t));
-		offset_vel = offset_pos + ((MPI_Offset) hdr.npart[1]) * ((MPI_Offset) (3 * sizeof(float))) + (MPI_Offset) (2 * sizeof(uint32_t));
-		offset_ID = offset_vel + offset_vel - offset_pos;
-
-		MPI_File_seek(infile, offset_pos, MPI_SEEK_SET);
-		while (npart < hdr.npart[1])
-		{
-			count = (hdr.npart[1] - npart > PCLBUFFER) ? PCLBUFFER : (hdr.npart[1] - npart);
-
-			read_success = MPI_File_read_all(infile, posdata, 3 * count, MPI_FLOAT, &status);
-
-			if (read_success != MPI_SUCCESS)
-			{
-				COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": could not read particle positions from file " << filename << "!" << endl;
-				MPI_File_close(&infile);
-				return;
-			}
-
-			offset_pos += (MPI_Offset) (3 * count * sizeof(float));
-			MPI_File_seek(infile, offset_vel, MPI_SEEK_SET);
-			read_success = MPI_File_read_all(infile, veldata, 3 * count, MPI_FLOAT, &status);
-
-			if (read_success != MPI_SUCCESS)
-			{
-				COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": could not read particle velocities from file " << filename << "!" << endl;
-				MPI_File_close(&infile);
-				return;
-			}
-
-			offset_vel += (MPI_Offset) (3 * count * sizeof(float));
-			MPI_File_seek(infile, offset_ID, MPI_SEEK_SET);
+		offset_vel += (uint64_t) (3 * count * sizeof(float));
+		fseek(infile, offset_ID, SEEK_SET);
 #if GADGET_ID_BYTES == 8
-			read_success = MPI_File_read_all(infile, IDs, count * sizeof(int64_t), MPI_BYTE, &status);
-			offset_ID += (MPI_Offset) (count * sizeof(int64_t));
+		read_success = fread(IDs, sizeof(int64_t), count, infile);
+		offset_ID += (uint64_t) (count * sizeof(int64_t));
 #else
-			read_success = MPI_File_read_all(infile, IDs, count * sizeof(int32_t), MPI_BYTE, &status);
-			offset_ID += (MPI_Offset) (count * sizeof(int32_t));
+		read_success = fread(IDs, sizeof(int32_t), count, infile);
+		offset_ID += (uint64_t) (count * sizeof(int32_t));
 #endif
-			MPI_File_seek(infile, offset_pos, MPI_SEEK_SET);
+		fseek(infile, offset_pos, SEEK_SET);
 
-			if (read_success != MPI_SUCCESS)
-			{
-				COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": could not read particle IDs from file " << filename << "!" << endl;
-				MPI_File_close(&infile);
-				return;
-			}
+		if (read_success != count)
+		{
+			cout << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": could not read particle IDs from file " << filename << "!" << endl;
+			fclose(infile);
+			return;
+		}
 
 #pragma omp parallel for
-			for (int i = 0; i < 3 * count; i++)
-			{
-				posdata[i] /= hdr.BoxSize;
-				while (posdata[i] < 0) posdata[i] += 1;
-				while (posdata[i] >= 1) posdata[i] -= 1;
-				veldata[i] *= hdr.time / rescale_vel;
-			}
-
-			int local_count = 0;
-
-#pragma omp parallel for reduction(+:local_count)
-			for (int i = 0; i < count; i++)
-			{
-				int coord[3];
-				Site x(*(this->lat_));
-#ifdef SINGLE
-				this->getPartCoord(posdata+3*i, coord);
-#else
-				double pos[3];
-				pos[0] = posdata[3*i];
-				pos[1] = posdata[3*i+1];
-				pos[2] = posdata[3*i+2];
-				this->getPartCoord(pos, coord);
-#endif
-				if (x.setCoord(coord))
-				{
-					local_count++;
-				}
-			}
-
-			if (this->num_particles_ + local_count > this->total_capacity_)
-			{
-				this->resizeGlobalBuffers(this->num_particles_ + local_count + this->extra_capacity_);
-			}
-
-			if (local_count > 0)
-			{
-				unsigned long long int buffer_idx = this->num_particles_;
-
-				add_particles<part, part_info><<<count/128+1, 128>>>(this, posdata, veldata, IDs, count, &buffer_idx);
-
-				auto success = cudaDeviceSynchronize();
-
-				if (success != cudaSuccess)
-				{
-					COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": CUDA error when loading particles!" << endl;
-					MPI_File_close(&infile);
-					throw std::runtime_error("CUDA error when loading particles!");
-				}
-
-				this->num_particles_ += local_count;
-			}
-			
-			npart += count;
-		}
-
-		MPI_File_close(&infile);
-		nfile++;
-
-		if (hdr.num_files > 1)
+		for (int i = 0; i < 3 * count; i++)
 		{
-			filename = filename.substr(0, filename.find_last_of('.')+1) + to_string(nfile);
+			posdata[i] /= hdr.BoxSize;
+			while (posdata[i] < 0) posdata[i] += 1;
+			while (posdata[i] >= 1) posdata[i] -= 1;
+			veldata[i] *= hdr.time / rescale_vel;
 		}
-	} while (nfile < hdr.num_files);
+
+		if (this->num_particles_ + count > this->total_capacity_)
+		{
+			this->resizeGlobalBuffers(this->num_particles_ + count + this->extra_capacity_);
+		}
+
+		unsigned long long int buffer_idx = this->num_particles_;
+
+		add_particles<part, part_info><<<count/128+1, 128>>>(this, posdata, veldata, IDs, count, &buffer_idx);
+
+		auto success = cudaDeviceSynchronize();
+
+		if (success != cudaSuccess)
+		{
+			COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": CUDA error when loading particles!" << endl;
+			fclose(infile);
+			throw std::runtime_error("CUDA error when loading particles!");
+		}
+
+		this->num_particles_ += count;
+
+		npart += count;
+	}
+
+	fclose(infile);
 
 	this->updateRowBuffers();
 	
@@ -1817,6 +2110,5 @@ void perfParticles_gevolution<part,part_info>::loadGadget2(string filename, gadg
 	free(veldata);
 	free(IDs);
 }
-
 
 #endif

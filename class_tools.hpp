@@ -263,6 +263,13 @@ void initializeCLASSstructures(metadata & sim, icsettings & ic, cosmology & cosm
 		}
 	}
 
+	COUT << endl << " CLASS input parameters:" << endl;
+	for (int j = 0; j < num_entries; j++)
+	{
+		COUT << class_filecontent.name[j] << " = " << class_filecontent.value[j] << endl;
+	}
+	COUT << endl;
+
 	COUT << " gevolution is calling CLASS..." << endl << endl;
 
 	if (input_read_from_file(&class_filecontent, &class_precision, &class_background, &class_thermo, &class_perturbs, &class_transfers, &class_primordial, &class_spectra, &class_nonlinear, &class_lensing, &class_distortions, &class_output, class_errmsg) == _FAILURE_)
