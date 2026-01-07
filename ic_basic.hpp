@@ -1838,11 +1838,27 @@ parameter * params, int & numparam)
 	ic_fields[0] = chi;
 	ic_fields[1] = phi;
 
+#if defined(NVTX_VERSION) && NVTX_VERSION >= 2
+	auto ic_checkpoint = [&](const char * label, int line) {
+		parallel.barrier();
+		if (parallel.rank() == 0) COUT << " [ICCHK] " << label << " (line " << line << ")" << endl;
+		nvtxMarkA(label);
+		parallel.barrier();
+	};
+#else
+	auto ic_checkpoint = [&](const char * label, int line) {
+		parallel.barrier();
+		if (parallel.rank() == 0) COUT << " [ICCHK] " << label << " (line " << line << ")" << endl;
+		parallel.barrier();
+	};
+#endif
+
 #ifdef HAVE_CLASS
 	gsl_interp_accel * acc = gsl_interp_accel_alloc();
 #endif
 	
 	loadHomogeneousTemplate(ic.pclfile[0], sim.numpcl[0], pcldata);
+	ic_checkpoint("after loadHomogeneousTemplate (cdm)", __LINE__);
 	
 	if (pcldata == NULL)
 	{
@@ -1856,13 +1872,16 @@ parameter * params, int & numparam)
 	else
 		generateCICKernel(*source);	
 	nvtxRangePop();
+	ic_checkpoint("after generateCICKernel (cdm)", __LINE__);
 	
 	nvtxRangePushA("generate displacement field(s)");
 	plan_source->execute(FFT_FORWARD);
+	ic_checkpoint("after plan_source forward (initial)", __LINE__);
 	
 	if (ic.pkfile[0] != '\0')	// initial displacements & velocities are derived from a single power spectrum
 	{
 		loadPowerSpectrum(ic.pkfile, pkspline, sim.boxsize);
+		ic_checkpoint("after loadPowerSpectrum", __LINE__);
 	
 		if (pkspline == NULL)
 		{
@@ -2105,8 +2124,8 @@ parameter * params, int & numparam)
 				gsl_spline_free(tk_t2);
 				tk_d2 = gsl_spline_alloc(gsl_interp_cspline, tk_d1->size);
 				tk_t2 = gsl_spline_alloc(gsl_interp_cspline, tk_d1->size);
-				gsl_spline_init(tk_d2, tk_d2->x, temp1, tk_d1->size);
-				gsl_spline_init(tk_t2, tk_d2->x, temp2, tk_d1->size);
+				gsl_spline_init(tk_d2, tk_d1->x, temp1, tk_d1->size);
+				gsl_spline_init(tk_t2, tk_d1->x, temp2, tk_d1->size);
 			}
 		}
 		
@@ -2159,6 +2178,7 @@ parameter * params, int & numparam)
 		
 	plan_chi->execute(FFT_BACKWARD);
 	chi->updateHalo();	// chi now contains the CDM displacement
+	ic_checkpoint("after CDM displacement inverse FFT", __LINE__);
 	nvtxRangePop();
 	
 	strcpy(pcls_cdm_info.type_name, "part_simple");
@@ -2174,11 +2194,13 @@ parameter * params, int & numparam)
 	nvtxRangePushA("initialize CDM particles: memory allocation");
 	pcls_cdm->initialize(pcls_cdm_info, &(phi->lattice()), boxSize, capacity+PCL_EXTRA_CAPACITY, PCL_EXTRA_CAPACITY);
 	nvtxRangePop();
+	ic_checkpoint("after pcls_cdm initialize", __LINE__);
 	
 	nvtxRangePushA("initialize CDM particles: positions");
 	initializeParticlePositions(sim.numpcl[0], pcldata, ic.numtile[0], *pcls_cdm);
 	pcls_cdm->updateRowBuffers();
 	nvtxRangePop();
+	ic_checkpoint("after CDM positions", __LINE__);
 
 	nvtxRangePushA("initialize CDM particles: displacements");
 	int op = MAX;
@@ -2187,6 +2209,7 @@ parameter * params, int & numparam)
 	else
 		pcls_cdm->moveParticles(displace_pcls_ic_basic_functor(), 1., &chi, 1, NULL, &max_displacement, &op, 1);	// displace CDM particles
 	nvtxRangePop();
+	ic_checkpoint("after CDM displacements", __LINE__);
 	
 	sim.numpcl[0] *= (long) ic.numtile[0] * (long) ic.numtile[0] * (long) ic.numtile[0];
 	
@@ -2208,15 +2231,16 @@ parameter * params, int & numparam)
 		{
 			generateCICKernel(*phi, sim.numpcl[1], pcldata, ic.numtile[1]);
 			plan_phi->execute(FFT_FORWARD);
-			generateDisplacementField(*scalarFT, 0., tk_d2, (unsigned int) ic.seed, ic.flags & ICFLAG_KSPHERE);
-			gsl_spline_free(tk_d2);
-			plan_phi->execute(FFT_BACKWARD);
-			phi->updateHalo();
-		}
-		
-		strcpy(pcls_b_info.type_name, "part_simple");
-		pcls_b_info.mass = cosmo.Omega_b / (Real) (sim.numpcl[1]*(long)ic.numtile[1]*(long)ic.numtile[1]*(long)ic.numtile[1]);
-		pcls_b_info.relativistic = false;
+		generateDisplacementField(*scalarFT, 0., tk_d2, (unsigned int) ic.seed, ic.flags & ICFLAG_KSPHERE);
+		gsl_spline_free(tk_d2);
+		plan_phi->execute(FFT_BACKWARD);
+		phi->updateHalo();
+		ic_checkpoint("after baryon displacement field", __LINE__);
+	}
+	
+	strcpy(pcls_b_info.type_name, "part_simple");
+	pcls_b_info.mass = cosmo.Omega_b / (Real) (sim.numpcl[1]*(long)ic.numtile[1]*(long)ic.numtile[1]*(long)ic.numtile[1]);
+	pcls_b_info.relativistic = false;
 
 		capacity = (16L * sim.numpcl[1] * (long) ic.numtile[1] * (long) ic.numtile[1] * (long) ic.numtile[1]) / (parallel.size() * 15L);
 	
@@ -2225,10 +2249,11 @@ parameter * params, int & numparam)
 	
 		initializeParticlePositions(sim.numpcl[1], pcldata, ic.numtile[1], *pcls_b);
 		pcls_b->updateRowBuffers();
-
-		pcls_b->moveParticles(displace_pcls_ic_basic_functor(), 1., &phi, 1, NULL, &max_displacement, &op, 1);	// displace baryon particles
 	
-		sim.numpcl[1] *= (long) ic.numtile[1] * (long) ic.numtile[1] * (long) ic.numtile[1];
+	pcls_b->moveParticles(displace_pcls_ic_basic_functor(), 1., &phi, 1, NULL, &max_displacement, &op, 1);	// displace baryon particles
+	ic_checkpoint("after baryon displacements", __LINE__);
+	
+	sim.numpcl[1] *= (long) ic.numtile[1] * (long) ic.numtile[1] * (long) ic.numtile[1];
 	
 		COUT << " " << sim.numpcl[1] << " baryon particles initialized: maximum displacement = " << max_displacement * sim.numpts << " lattice units." << endl;
 	
@@ -2274,6 +2299,7 @@ parameter * params, int & numparam)
 		if (ic.numtile[1+sim.baryon_flag+p] < 1) continue;
 
 		loadHomogeneousTemplate(ic.pclfile[1+sim.baryon_flag+p], sim.numpcl[1+sim.baryon_flag+p], pcldata);
+		ic_checkpoint("after loadHomogeneousTemplate (ncdm)", __LINE__);
 	
 		if (pcldata == NULL)
 		{
@@ -2350,6 +2376,7 @@ parameter * params, int & numparam)
 		initializeParticlePositions(sim.numpcl[1+sim.baryon_flag+p], pcldata, ic.numtile[1+sim.baryon_flag+p], pcls_ncdm[p]);
 		
 		pcls_ncdm[p].moveParticles(displace_pcls_ic_basic, 1., &chi, 1, NULL, &max_displacement, &op, 1);	// displace non-CDM particles
+		ic_checkpoint("after ncdm displacements", __LINE__);
 		
 		sim.numpcl[1+sim.baryon_flag+p] *= (long) ic.numtile[1+sim.baryon_flag+p] * (long) ic.numtile[1+sim.baryon_flag+p] * (long) ic.numtile[1+sim.baryon_flag+p];
 	
@@ -2395,6 +2422,7 @@ parameter * params, int & numparam)
 	
 	plan_phi->execute(FFT_BACKWARD);
 	phi->updateHalo();	// phi now finally contains phi
+	ic_checkpoint("after final phi inverse FFT", __LINE__);
 	nvtxRangePop();
 	
 	if (ic.pkfile[0] != '\0')	// if power spectrum is used instead of transfer functions, set velocities using linear approximation
@@ -2446,6 +2474,7 @@ parameter * params, int & numparam)
 	plan_Bi->execute(FFT_BACKWARD);	
 	Bi->updateHalo();	// B initialized
 	nvtxRangePop();
+	ic_checkpoint("after B initialization", __LINE__);
 	
 	nvtxRangePushA("initialize chi");
 	//projection_init(Sij);
