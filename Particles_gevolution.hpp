@@ -1721,6 +1721,7 @@ void Particles_gevolution<part,part_info,part_dataType>::loadGadget2(string file
 		for (int i = 0; i < 3 * count; i++)
 		{
 			posdata[i] /= hdr.BoxSize;
+			while (posdata[i] < 0) posdata[i] += 1;
 			while (posdata[i] >= 1.) posdata[i] -= 1.;
 			veldata[i] *= hdr.time / rescale_vel;
 		}
