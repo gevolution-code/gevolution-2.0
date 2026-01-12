@@ -799,8 +799,8 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 	long * IDcombuf3 = NULL;
 	long * IDcombuf4 = NULL;
 	Site xsim;
-	int done_B = 0;
 #ifdef HAVE_HEALPIX
+	int done_B = 0;
 	int64_t pix, pix2, q;
 	vector<int> pixbatch_id;
 	vector<int> sender_proc;
