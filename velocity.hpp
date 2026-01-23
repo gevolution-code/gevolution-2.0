@@ -6,9 +6,9 @@
 //
 // Author: Goran Jelic-Cizmek (Université de Genève)
 // Author: Francesca Lepori (SISSA Trieste & INFN Trieste & Université de Genève)
-// Author: Julian Adamek (Queen Mary University of London)
+// Author: Julian Adamek (Queen Mary University of London & Universität Zürich & ETH Zürich)
 //
-// Last modified: April 2019
+// Last modified: January 2026
 //
 //////////////////////////
 
@@ -88,9 +88,38 @@ double D1_prime(
 //
 //////////////////////////
 
+__host__ __device__ void compute_vi_rescaled_site(Field<Real> * fields[], Site * sites, int nfields, double * params, double * outputs)
+{
+    double a = params[0];
+    double rescale = params[1];
+
+    if ((*fields[0])(*sites) < 1.E-30)
+    {
+        (*fields[2])(*sites,0) *= rescale;
+        (*fields[2])(*sites,1) *= rescale;
+        (*fields[2])(*sites,2) *= rescale;
+    }
+    else
+    {
+        (*fields[2])(*sites,0) = (*fields[1])(*sites,0) / (*fields[0])(*sites) / a;
+        (*fields[2])(*sites,1) = (*fields[1])(*sites,1) / (*fields[0])(*sites) / a;
+        (*fields[2])(*sites,2) = (*fields[1])(*sites,2) / (*fields[0])(*sites) / a;
+    }
+}
+
+// callable struct for compute_vi_rescaled
+struct compute_vi_rescaled_functor
+{
+    __host__ __device__ void operator()(Field<Real> * fields[], Site * sites, int nfields, double * params, double * outputs)
+    {
+        compute_vi_rescaled_site(fields, sites, nfields, params, outputs);
+    }
+};
+
+
 void compute_vi_rescaled(cosmology & cosmo, Field<Real> * vi, Field<Real> * source, Field<Real> * Ti0, double a = 1., double a_old = 1.)
 {
-	Site xvi(vi->lattice());
+	/*Site xvi(vi->lattice());
 
 	Real rescale = D1_prime(cosmo, a)/D1_prime(cosmo, a_old)*a/a_old;
 
@@ -108,7 +137,24 @@ void compute_vi_rescaled(cosmology & cosmo, Field<Real> * vi, Field<Real> * sour
 			(*vi)(xvi,1) = (*Ti0)(xvi,1) / (*source)(xvi) / a;
 			(*vi)(xvi,2) = (*Ti0)(xvi,2) / (*source)(xvi) / a;
 		}
-	}
+	}*/
+
+    Field<Real> * fields[3] = {source, Ti0, vi};
+    double params[2] = {a, D1_prime(cosmo, a)/D1_prime(cosmo, a_old)*a/a_old};
+    double * d_params;
+
+    cudaMalloc(&d_params, 2 * sizeof(double));
+    cudaMemcpy(d_params, params, 2 * sizeof(double), cudaMemcpyHostToDevice);
+
+    int numpts = vi->lattice().sizeLocal(0);
+    int block_x = vi->lattice().sizeLocal(1);
+    int block_y = vi->lattice().sizeLocal(2);
+
+    lattice_for_each<<<dim3(block_x, block_y), 128>>>(compute_vi_rescaled_functor(), numpts, fields, 3, d_params, nullptr, nullptr);
+
+    cudaDeviceSynchronize();
+
+    cudaFree(d_params);
 }
 
 #endif
