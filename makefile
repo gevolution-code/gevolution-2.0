@@ -1,8 +1,10 @@
 # programming environment
 COMPILER     := nvcc
-INCLUDE      := -I. -I/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/hdf5-1.14.5-iyjsbrml3dbr3l7cp65dgeclqlyfcdnn/include -I/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/gsl-2.8-pjzdxlsptkmjuvnrxif5x7ellp7rab3c/include -I/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/fftw-3.3.10-3yw4wbosrsa2257uitrgpge6a3mfw7ck/include -I../LATfield2 -I/users/adamek/local_arm/include -I../class_public/include -I../class_public/external/HyRec2020 -I../class_public/external/RecfastCLASS -I../class_public/external/heating # -I/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/cuda-12.6.2-csv6jo3czkfdk46ep7pmm6ipo3yjlbjj/include  # add the path to LATfield2 and other libraries (if necessary)
-LIB          := -L/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/hdf5-1.14.5-iyjsbrml3dbr3l7cp65dgeclqlyfcdnn/lib -L/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/gsl-2.8-pjzdxlsptkmjuvnrxif5x7ellp7rab3c/lib -L/users/adamek/local_arm/lib -L/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/fftw-3.3.10-3yw4wbosrsa2257uitrgpge6a3mfw7ck/lib -lfftw3f -lm -lhdf5 -lgsl -lgslcblas -lchealpix -lcfitsio -lclass -lcufft # -L/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/cuda-12.6.2-csv6jo3czkfdk46ep7pmm6ipo3yjlbjj/lib64 -lcufft -lcufftw
-HPXCXXLIB    := -I/users/adamek/local_arm/include/healpix_cxx -lhealpix_cxx
+INCLUDE      := -I../LATfield2 -I../class/include
+INCLUDE      += $(addprefix -I,$(shell find ../class/external -type d))
+LIB          := -lfftw3f -lm -lhdf5 -lgsl -lgslcblas -lcufft
+LIB      	 += -L../class -lclass
+HPXCXXLIB    := 
 
 # target and source
 EXEC         := gevolution
@@ -25,13 +27,15 @@ DGEVOLUTION  += -DEXACT_OUTPUT_REDSHIFTS
 DGEVOLUTION  += -DCOLORTERMINAL
 #DGEVOLUTION  += -DCHECK_B
 DGEVOLUTION  += -DHAVE_CLASS    # requires LIB -lclass
-DGEVOLUTION  += -DHAVE_HEALPIX  # requires LIB -lchealpix
+#DGEVOLUTION  += -DHAVE_HEALPIX  # requires LIB -lchealpix
 DGEVOLUTION  += -DGRADIENT_ORDER=2
+DGEVOLUTION  += -DLATFIELD2_DEBUG_CUDA_SYNC
+DGEVOLUTION  += -DNOTGH
 #DGEVOLUTION  += -DPCL_EXTRA_CAPACITY=8388608
 #DGEVOLUTION  += -DDEBUG_ALIGNMENT
 
 # further compiler options
-OPT          := -O3 -std=c++17 -g -ccbin mpic++ -arch=sm_90 --extended-lambda -Xcompiler -fopenmp
+OPT          := -O3 -std=c++17 -g -ccbin mpic++ -arch=sm_80 --extended-lambda -Xcompiler -fopenmp
 OPT_GCC	     := -O3 -std=c++17 -g -fopenmp
 
 $(EXEC): $(SOURCE) $(HEADERS) makefile
