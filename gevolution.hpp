@@ -3121,8 +3121,20 @@ void projection_Ti0_project(Particles<part, part_info, part_dataType> * pcls, Fi
 __host__ __device__ void particle_Ti0_project(double dtau, double dx, part_simple * part, double * ref_dist, part_simple_info partInfo, Field<Real> * fields[], Site * sites, int nfield, double * params, double * outputs, int noutputs)
 {
 	Real mass = partInfo.mass * (*params) / (dx*dx*dx);
+	#ifdef __CUDA_ARCH__
+	unsigned int laneID;
+	unsigned mask;
+	asm volatile ("mov.u32 %0, %laneid;" : "=r"(laneID));
+	mask = __activemask();
+	long siteindex = sites[0].index();
+	long siteindex2;
+	bool write_atomic = true;
+	Real temp;
+	#endif
 
-	Real localCubeWeights[8] = {Real(1), Real(1), Real(1), Real(1), Real(1), Real(1), Real(1), Real(1)};
+	Real localCubeWeights[24] = {Real(1), Real(1), Real(1), Real(1), Real(1), Real(1), Real(1), Real(1),
+	                             Real(1), Real(1), Real(1), Real(1), Real(1), Real(1), Real(1), Real(1),
+	                             Real(1), Real(1), Real(1), Real(1), Real(1), Real(1), Real(1), Real(1)};
 
 	if (nfield > 1)
 	{
@@ -3157,29 +3169,73 @@ __host__ __device__ void particle_Ti0_project(double dtau, double dx, part_simpl
 	localCubeWeights[6] *= static_cast<Real>(ref_dist[0]) * static_cast<Real>(ref_dist[1]) * (Real(1)-static_cast<Real>(ref_dist[2])) * mass;
 	localCubeWeights[7] *= static_cast<Real>(ref_dist[0]) * static_cast<Real>(ref_dist[1]) * static_cast<Real>(ref_dist[2]) * mass;
 
-	#ifdef __CUDA_ARCH__
-	for (int i = 0; i < 3; i++)
+	#pragma unroll
+	for (int i = 8; i < 16; i++)
 	{
-		atomicAdd(&(*fields[0])(sites[0],i)       , localCubeWeights[0] * (*part).vel[i]);
-		atomicAdd(&(*fields[0])(sites[0]+2,i)     , localCubeWeights[1] * (*part).vel[i]);
-		atomicAdd(&(*fields[0])(sites[0]+1,i)     , localCubeWeights[2] * (*part).vel[i]);
-		atomicAdd(&(*fields[0])(sites[0]+1+2,i)   , localCubeWeights[3] * (*part).vel[i]);
-		atomicAdd(&(*fields[0])(sites[0]+0,i)     , localCubeWeights[4] * (*part).vel[i]);
-		atomicAdd(&(*fields[0])(sites[0]+0+2,i)   , localCubeWeights[5] * (*part).vel[i]);
-		atomicAdd(&(*fields[0])(sites[0]+0+1,i)   , localCubeWeights[6] * (*part).vel[i]);
-		atomicAdd(&(*fields[0])(sites[0]+0+1+2,i) , localCubeWeights[7] * (*part).vel[i]);
+		localCubeWeights[i] = localCubeWeights[i-8] * (*part).vel[1];
+	}
+
+	#pragma unroll
+	for (int i = 16; i < 24; i++)
+	{
+		localCubeWeights[i] = localCubeWeights[i-16] * (*part).vel[2];
+	}
+
+	#pragma unroll
+	for (int i = 0; i < 8; i++)
+	{
+		localCubeWeights[i] *= (*part).vel[0];
+	}
+
+	#ifdef __CUDA_ARCH__
+	siteindex2 = __shfl_up_sync(mask, siteindex, 1);
+	if (laneID > 0 && siteindex == siteindex2)
+	{
+		write_atomic = false;
+	}
+
+	for (int offset = 16; offset > 0; offset >>= 1)
+	{
+		siteindex2 = __shfl_down_sync(mask, siteindex, offset);
+		#pragma unroll
+		for (int i = 0; i < 24; i++)
+		{
+			temp = localCubeWeights[i];
+			temp = __shfl_down_sync(mask, temp, offset);
+			if (mask & (1U << (laneID + offset)) && siteindex == siteindex2)
+			{
+				localCubeWeights[i] += temp;
+			}
+		}
+	}
+
+	if (write_atomic)
+	{
+		#pragma unroll
+		for (int i = 0; i < 3; i++)
+		{
+			atomicAdd(&(*fields[0])(sites[0],i)       , localCubeWeights[8*i]);
+			atomicAdd(&(*fields[0])(sites[0]+2,i)     , localCubeWeights[8*i+1]);
+			atomicAdd(&(*fields[0])(sites[0]+1,i)     , localCubeWeights[8*i+2]);
+			atomicAdd(&(*fields[0])(sites[0]+1+2,i)   , localCubeWeights[8*i+3]);
+			atomicAdd(&(*fields[0])(sites[0]+0,i)     , localCubeWeights[8*i+4]);
+			atomicAdd(&(*fields[0])(sites[0]+0+2,i)   , localCubeWeights[8*i+5]);
+			atomicAdd(&(*fields[0])(sites[0]+0+1,i)   , localCubeWeights[8*i+6]);
+			atomicAdd(&(*fields[0])(sites[0]+0+1+2,i) , localCubeWeights[8*i+7]);
+		}
 	}
 	#else
+	#pragma unroll
 	for (int i = 0; i < 3; i++)
 	{
-		(*fields[0])(sites[0],i)       += localCubeWeights[0] * (*part).vel[i];
-		(*fields[0])(sites[0]+2,i)     += localCubeWeights[1] * (*part).vel[i];
-		(*fields[0])(sites[0]+1,i)     += localCubeWeights[2] * (*part).vel[i];
-		(*fields[0])(sites[0]+1+2,i)   += localCubeWeights[3] * (*part).vel[i];
-		(*fields[0])(sites[0]+0,i)     += localCubeWeights[4] * (*part).vel[i];
-		(*fields[0])(sites[0]+0+2,i)   += localCubeWeights[5] * (*part).vel[i];
-		(*fields[0])(sites[0]+0+1,i)   += localCubeWeights[6] * (*part).vel[i];
-		(*fields[0])(sites[0]+0+1+2,i) += localCubeWeights[7] * (*part).vel[i];
+		(*fields[0])(sites[0],i)       += localCubeWeights[8*i];
+		(*fields[0])(sites[0]+2,i)     += localCubeWeights[8*i+1];
+		(*fields[0])(sites[0]+1,i)     += localCubeWeights[8*i+2];
+		(*fields[0])(sites[0]+1+2,i)   += localCubeWeights[8*i+3];
+		(*fields[0])(sites[0]+0,i)     += localCubeWeights[8*i+4];
+		(*fields[0])(sites[0]+0+2,i)   += localCubeWeights[8*i+5];
+		(*fields[0])(sites[0]+0+1,i)   += localCubeWeights[8*i+6];
+		(*fields[0])(sites[0]+0+1+2,i) += localCubeWeights[8*i+7];
 	}
 	#endif
 }
