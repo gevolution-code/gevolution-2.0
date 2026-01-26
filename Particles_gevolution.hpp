@@ -12,6 +12,7 @@
 #define PARTICLES_GEVOLUTION_HEADER
 
 #include "particles/LATfield2_perfParticles.hpp"
+#include <cstring>
 
 #ifndef PCLBUFFER
 #define PCLBUFFER 1048576
@@ -470,6 +471,10 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 	float * posdata;
 	float * veldata;
 	long * IDs;
+	float * posdata_dev = nullptr;
+	float * veldata_dev = nullptr;
+	long * IDs_dev = nullptr;
+	long buffer_capacity = PCLBUFFER;
 	long count, npart;
 	int row_start = 0, row_count;
 	uint32_t blocksize;
@@ -482,6 +487,15 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 	posdata = (float *) malloc(3 * sizeof(float) * PCLBUFFER);
 	veldata = (float *) malloc(3 * sizeof(float) * PCLBUFFER);
 	IDs = (long *) malloc(sizeof(int64_t) * PCLBUFFER);
+
+#ifdef NOTGH
+	if (cudaMalloc(&posdata_dev, 3 * sizeof(float) * PCLBUFFER) != cudaSuccess ||
+		cudaMalloc(&veldata_dev, 3 * sizeof(float) * PCLBUFFER) != cudaSuccess ||
+		cudaMalloc(&IDs_dev, sizeof(int64_t) * PCLBUFFER) != cudaSuccess)
+	{
+		throw std::runtime_error("CUDA malloc failed for particle buffers in saveGadget2");
+	}
+#endif
 
 	npart_row = (int *) malloc(sizeof(int) * this->num_row_buffers_);
 
@@ -579,7 +593,7 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 				row_count++;
 			} while (count < PCLBUFFER && row_start + row_count < this->num_row_buffers_);
 
-			if (count > PCLBUFFER)
+			if (count > buffer_capacity)
 			{
 				float * new_posdata = (float *) realloc(posdata, 3 * sizeof(float) * count);
 				float * new_veldata = (float *) realloc(veldata, 3 * sizeof(float) * count);
@@ -593,6 +607,19 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 				posdata = new_posdata;
 				veldata = new_veldata;
 				IDs = new_IDs;
+				buffer_capacity = count;
+
+#ifdef NOTGH
+				if (posdata_dev) cudaFree(posdata_dev);
+				if (veldata_dev) cudaFree(veldata_dev);
+				if (IDs_dev) cudaFree(IDs_dev);
+				if (cudaMalloc(&posdata_dev, 3 * sizeof(float) * buffer_capacity) != cudaSuccess ||
+					cudaMalloc(&veldata_dev, 3 * sizeof(float) * buffer_capacity) != cudaSuccess ||
+					cudaMalloc(&IDs_dev, sizeof(int64_t) * buffer_capacity) != cudaSuccess)
+				{
+					throw std::runtime_error("CUDA realloc failed for particle buffers in saveGadget2");
+				}
+#endif
 			}
 			
 			if (count > 0)
@@ -601,7 +628,13 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 				//buffer_count = 0;
 				cudaMemset(d_buffer_count, 0, sizeof(unsigned long long int));
 
-				buffer_tracer_particles<<<row_count, 128>>>(this, tracer_factor, dtau_pos, dtau_vel, hdr.time, hdr.BoxSize, phi, posdata, veldata, IDs, row_start, d_buffer_count);
+				buffer_tracer_particles<<<row_count, 128>>>(this, tracer_factor, dtau_pos, dtau_vel, hdr.time, hdr.BoxSize, phi,
+	#ifdef NOTGH
+					posdata_dev, veldata_dev, IDs_dev,
+	#else
+					posdata, veldata, IDs,
+	#endif
+					row_start, d_buffer_count);
 
 				success = cudaDeviceSynchronize();
 
@@ -694,7 +727,7 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 				row_count++;
 			} while (count < PCLBUFFER && row_start + row_count < this->num_row_buffers_);
 
-			if (count > PCLBUFFER)
+			if (count > buffer_capacity)
 			{
 				float * new_posdata = (float *) realloc(posdata, 3 * sizeof(float) * count);
 				float * new_veldata = (float *) realloc(veldata, 3 * sizeof(float) * count);
@@ -708,12 +741,31 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 				posdata = new_posdata;
 				veldata = new_veldata;
 				IDs = new_IDs;
+				buffer_capacity = count;
+
+#ifdef NOTGH
+				if (posdata_dev) cudaFree(posdata_dev);
+				if (veldata_dev) cudaFree(veldata_dev);
+				if (IDs_dev) cudaFree(IDs_dev);
+				if (cudaMalloc(&posdata_dev, 3 * sizeof(float) * buffer_capacity) != cudaSuccess ||
+					cudaMalloc(&veldata_dev, 3 * sizeof(float) * buffer_capacity) != cudaSuccess ||
+					cudaMalloc(&IDs_dev, sizeof(int64_t) * buffer_capacity) != cudaSuccess)
+				{
+					throw std::runtime_error("CUDA realloc failed for particle buffers in saveGadget2");
+				}
+#endif
 			}
 			
 			//buffer_count = 0;
 			cudaMemset(d_buffer_count, 0, sizeof(unsigned long long int));
 
-			buffer_tracer_particles<<<row_count, 128>>>(this, tracer_factor, dtau_pos, dtau_vel, hdr.time, hdr.BoxSize, phi, posdata, veldata, IDs, row_start, d_buffer_count);
+			buffer_tracer_particles<<<row_count, 128>>>(this, tracer_factor, dtau_pos, dtau_vel, hdr.time, hdr.BoxSize, phi,
+#ifdef NOTGH
+				posdata_dev, veldata_dev, IDs_dev,
+#else
+				posdata, veldata, IDs,
+#endif
+				row_start, d_buffer_count);
 
 			success = cudaDeviceSynchronize();
 
@@ -722,6 +774,24 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 				throw std::runtime_error("CUDA error in buffer_tracer_particles");
 			}
 			cudaMemcpy(&buffer_count, d_buffer_count, sizeof(unsigned long long int), cudaMemcpyDeviceToHost);
+
+#ifdef NOTGH
+			if (buffer_count > 0)
+			{
+				cudaMemcpy(posdata, posdata_dev, 3 * buffer_count * sizeof(float), cudaMemcpyDeviceToHost);
+				cudaMemcpy(veldata, veldata_dev, 3 * buffer_count * sizeof(float), cudaMemcpyDeviceToHost);
+				cudaMemcpy(IDs, IDs_dev, buffer_count * sizeof(int64_t), cudaMemcpyDeviceToHost);
+			}
+#endif
+
+#ifdef NOTGH
+			if (buffer_count > 0)
+			{
+				cudaMemcpy(posdata, posdata_dev, 3 * buffer_count * sizeof(float), cudaMemcpyDeviceToHost);
+				cudaMemcpy(veldata, veldata_dev, 3 * buffer_count * sizeof(float), cudaMemcpyDeviceToHost);
+				cudaMemcpy(IDs, IDs_dev, buffer_count * sizeof(int64_t), cudaMemcpyDeviceToHost);
+			}
+#endif
 			nvtxRangePop();
 
 			nvtxRangePushA("write particles to disk");
@@ -739,6 +809,12 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 
 			row_start += row_count;
 		}
+
+#ifdef NOTGH
+		if (posdata_dev) cudaFree(posdata_dev);
+		if (veldata_dev) cudaFree(veldata_dev);
+		if (IDs_dev) cudaFree(IDs_dev);
+#endif
 
 		fclose(outfile);
 	}
@@ -1314,6 +1390,13 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 	float * veldata;
 	long * IDs;
 	unsigned char * loginfo;
+	float * posdata_dev = nullptr;
+	float * veldata_dev = nullptr;
+	long * IDs_dev = nullptr;
+	unsigned char * loginfo_dev = nullptr;
+	lightcone_geometry * lightcone_dev = nullptr;
+	double (*vertex_dev)[3] = nullptr;
+	Real * domain_dev = nullptr;
 	long count, npart, reject;
 	int row_start = 0, row_count;
 	MPI_File outfile;
@@ -1352,12 +1435,35 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 	domain[2] = this->coordSkip_[0] * this->boxSize_[0] / this->lat_size_[0];
 	domain[3] = domain[2] + this->lat_size_local_[2] * this->boxSize_[0] / this->lat_size_[0];
 
+#ifdef NOTGH
+	if (cudaMallocManaged(&lightcone_dev, sizeof(lightcone_geometry)) != cudaSuccess ||
+		cudaMallocManaged(&vertex_dev, sizeof(double) * MAX_INTERSECTS * 3) != cudaSuccess ||
+		cudaMallocManaged(&domain_dev, sizeof(Real) * 4) != cudaSuccess)
+	{
+		throw std::runtime_error("CUDA malloc failed for lightcone buffers in saveGadget2");
+	}
+
+	*lightcone_dev = lightcone;
+	memcpy(vertex_dev, vertex, sizeof(double) * MAX_INTERSECTS * 3);
+	for (int i = 0; i < 4; i++)
+	{
+		domain_dev[i] = domain[i];
+	}
+#endif
+
 	IDs = (long *) malloc(sizeof(int64_t) * PCLBUFFER);
 
 	if (IDs == NULL)
 	{
 		throw std::runtime_error("Error allocating memory for particle IDs");
 	}
+
+#ifdef NOTGH
+	if (cudaMalloc(&IDs_dev, sizeof(int64_t) * PCLBUFFER) != cudaSuccess)
+	{
+		throw std::runtime_error("CUDA malloc failed for particle IDs in saveGadget2");
+	}
+#endif
 
 	nvtxRangePushA("count particles to be written");
 
@@ -1374,7 +1480,13 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 	cudaMemcpy(d_npart_checkID_row, npart_checkID_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyHostToDevice);
 
 	// count particles
-	count_tracer_particles<part, part_info><<<this->num_row_buffers_, 128>>>(this, tracer_factor, lightcone, inner, outer, dtau_old, vertex, vertexcount, d_npart, d_npart_row, d_npart_checkID_row);
+	count_tracer_particles<part, part_info><<<this->num_row_buffers_, 128>>>(this, tracer_factor,
+#ifdef NOTGH
+		*lightcone_dev, inner, outer, dtau_old, vertex_dev, vertexcount,
+#else
+		lightcone, inner, outer, dtau_old, vertex, vertexcount,
+#endif
+		d_npart, d_npart_row, d_npart_checkID_row);
 
 	auto success = cudaDeviceSynchronize();
 
@@ -1413,6 +1525,14 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 			}
 
 			IDs = new_IDs;
+
+#ifdef NOTGH
+			if (IDs_dev) cudaFree(IDs_dev);
+			if (cudaMalloc(&IDs_dev, sizeof(int64_t) * count) != cudaSuccess)
+			{
+				throw std::runtime_error("CUDA realloc failed for particle IDs in saveGadget2");
+			}
+#endif
 		}
 
 		if (count > 0)
@@ -1420,7 +1540,18 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 			//buffer_count1 = 0;
 			cudaMemset(d_buffer_count1, 0, sizeof(unsigned long long int));
 
-			buffer_tracer_IDs<part, part_info><<<row_count, 128>>>(this, tracer_factor, lightcone, inner, outer, dtau_old, vertex, vertexcount, IDs, row_start, d_buffer_count1);
+			buffer_tracer_IDs<part, part_info><<<row_count, 128>>>(this, tracer_factor,
+#ifdef NOTGH
+				*lightcone_dev, inner, outer, dtau_old, vertex_dev, vertexcount,
+#else
+				lightcone, inner, outer, dtau_old, vertex, vertexcount,
+#endif
+#ifdef NOTGH
+				IDs_dev,
+#else
+				IDs,
+#endif
+				row_start, d_buffer_count1);
 
 			success = cudaDeviceSynchronize();
 
@@ -1430,6 +1561,13 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 			}
 
 			cudaMemcpy(&buffer_count1, d_buffer_count1, sizeof(unsigned long long int), cudaMemcpyDeviceToHost);
+
+#ifdef NOTGH
+			if (buffer_count1 > 0)
+			{
+				cudaMemcpy(IDs, IDs_dev, buffer_count1 * sizeof(int64_t), cudaMemcpyDeviceToHost);
+			}
+#endif
 
 			// check IDs against IDbacklog
 			reject = 0;
@@ -1510,6 +1648,15 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 			throw std::runtime_error("Error allocating memory for particle buffers");
 		}
 
+#ifdef NOTGH
+		if (cudaMalloc(&posdata_dev, 3 * sizeof(float) * PCLBUFFER) != cudaSuccess ||
+			cudaMalloc(&veldata_dev, 3 * sizeof(float) * PCLBUFFER) != cudaSuccess ||
+			cudaMalloc(&loginfo_dev, PCLBUFFER) != cudaSuccess)
+		{
+			throw std::runtime_error("CUDA malloc failed for particle buffers in saveGadget2");
+		}
+#endif
+
 		// second loop: buffer and write particles
 		row_start = 0;
 
@@ -1543,6 +1690,20 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 				veldata = new_veldata;
 				IDs = new_IDs;
 				loginfo = new_loginfo;
+
+#ifdef NOTGH
+				if (posdata_dev) cudaFree(posdata_dev);
+				if (veldata_dev) cudaFree(veldata_dev);
+				if (IDs_dev) cudaFree(IDs_dev);
+				if (loginfo_dev) cudaFree(loginfo_dev);
+				if (cudaMalloc(&posdata_dev, 3 * sizeof(float) * count) != cudaSuccess ||
+					cudaMalloc(&veldata_dev, 3 * sizeof(float) * count) != cudaSuccess ||
+					cudaMalloc(&IDs_dev, sizeof(int64_t) * count) != cudaSuccess ||
+					cudaMalloc(&loginfo_dev, count) != cudaSuccess)
+				{
+					throw std::runtime_error("CUDA realloc failed for particle buffers in saveGadget2");
+				}
+#endif
 			}
 
 			if (count > 0)
@@ -1551,7 +1712,18 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 				cudaMemset(d_buffer_count1, 0, sizeof(unsigned long long int));
 				cudaMemcpy(d_buffer_count2, &buffer_count2, sizeof(unsigned long long int), cudaMemcpyHostToDevice);
 
-				buffer_tracer_particles<part, part_info, IDlog_scatter><<<row_count, 128>>>(this, tracer_factor, lightcone, (Real) dist, inner, outer, dtau, dtau_old, (double) hdr.time, dadtau, this->boxSize_[0], domain, phi, vertex, vertexcount, posdata, veldata, IDs, loginfo, row_start, d_buffer_count1, d_buffer_count2);
+				buffer_tracer_particles<part, part_info, IDlog_scatter><<<row_count, 128>>>(this, tracer_factor,
+#ifdef NOTGH
+					*lightcone_dev, (Real) dist, inner, outer, dtau, dtau_old, (double) hdr.time, dadtau, this->boxSize_[0], domain_dev, phi, vertex_dev, vertexcount,
+#else
+					lightcone, (Real) dist, inner, outer, dtau, dtau_old, (double) hdr.time, dadtau, this->boxSize_[0], domain, phi, vertex, vertexcount,
+#endif
+#ifdef NOTGH
+					posdata_dev, veldata_dev, IDs_dev, loginfo_dev,
+#else
+					posdata, veldata, IDs, loginfo,
+#endif
+					row_start, d_buffer_count1, d_buffer_count2);
 
 				success = cudaDeviceSynchronize();
 
@@ -1561,6 +1733,16 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 				}
 
 				cudaMemcpy(&buffer_count1, d_buffer_count1, sizeof(unsigned long long int), cudaMemcpyDeviceToHost);
+
+#ifdef NOTGH
+				if (buffer_count1 > 0)
+				{
+					cudaMemcpy(posdata, posdata_dev, 3 * buffer_count1 * sizeof(float), cudaMemcpyDeviceToHost);
+					cudaMemcpy(veldata, veldata_dev, 3 * buffer_count1 * sizeof(float), cudaMemcpyDeviceToHost);
+					cudaMemcpy(IDs, IDs_dev, buffer_count1 * sizeof(int64_t), cudaMemcpyDeviceToHost);
+					cudaMemcpy(loginfo, loginfo_dev, buffer_count1 * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+				}
+#endif
 
 				if (buffer_count1 > 0)
 				{
@@ -1654,6 +1836,16 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 
 	cudaFree(d_buffer_count1);
 	cudaFree(d_buffer_count2);
+
+#ifdef NOTGH
+	if (posdata_dev) cudaFree(posdata_dev);
+	if (veldata_dev) cudaFree(veldata_dev);
+	if (IDs_dev) cudaFree(IDs_dev);
+	if (loginfo_dev) cudaFree(loginfo_dev);
+	if (lightcone_dev) cudaFree(lightcone_dev);
+	if (vertex_dev) cudaFree(vertex_dev);
+	if (domain_dev) cudaFree(domain_dev);
+#endif
 }
 
 

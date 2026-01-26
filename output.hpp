@@ -19,6 +19,9 @@
 #include <algorithm>
 #include <vector>
 #include <nvtx3/nvToolsExt.h>
+#if defined(DEBUG) || defined(NOTGH)
+#include <cuda_runtime.h>
+#endif
 
 using namespace std;
 
@@ -77,6 +80,21 @@ void writeSnapshots(metadata & sim, cosmology & cosmo, const double fourpiG, con
 	Site x(phi->lattice());
 	Real divB, curlB, divh, traceh, normh;
 	double dtau_pos = 0.;
+
+#ifdef DEBUG
+	auto cuda_check_output = [&](const char * label) {
+		cudaError_t err = cudaGetLastError();
+		if (err != cudaSuccess)
+		{
+			throw std::runtime_error(std::string("CUDA error before ") + label + ": " + cudaGetErrorString(err));
+		}
+		err = cudaDeviceSynchronize();
+		if (err != cudaSuccess)
+		{
+			throw std::runtime_error(std::string("CUDA sync error before ") + label + ": " + cudaGetErrorString(err));
+		}
+	};
+#endif
 
 	sprintf(filename, "%03d", snapcount);
 			
@@ -220,21 +238,59 @@ void writeSnapshots(metadata & sim, cosmology & cosmo, const double fourpiG, con
 		{
 			plan_Bi->execute(FFT_BACKWARD);
 		}
+#ifdef DEBUG
+		cuda_check_output("B output after FFT backward (if any)");
+#endif
 
 		double params = 1. / (a * a * sim.numpts);
 		double * d_params;
+		Field<Real> ** d_fields = nullptr;
+#ifdef NOTGH
+		if (cudaMallocManaged(&d_params, sizeof(double)) != cudaSuccess)
+		{
+			throw std::runtime_error("CUDA malloc failed for params in B output");
+		}
+		*d_params = params;
+		if (cudaMallocManaged(&d_fields, sizeof(Field<Real> *)) != cudaSuccess)
+		{
+			cudaFree(d_params);
+			throw std::runtime_error("CUDA malloc failed for fields in B output");
+		}
+		d_fields[0] = Bi;
+#else
 		cudaMalloc((void **) &d_params, sizeof(double));
 		cudaMemcpy(d_params, &params, sizeof(double), cudaMemcpyDefault);
+		d_fields = &Bi;
+#endif
 
-		lattice_for_each<<<dim3(Bi->lattice().sizeLocal(1), Bi->lattice().sizeLocal(2)), 128>>>(lattice_multiply_functor<3>(), sim.numpts, &Bi, 1, d_params, nullptr, nullptr);
+		lattice_for_each<<<dim3(Bi->lattice().sizeLocal(1), Bi->lattice().sizeLocal(2)), 128>>>(lattice_multiply_functor<3>(), sim.numpts, d_fields, 1, d_params, nullptr, nullptr);
 
 		cudaDeviceSynchronize();
 		cudaFree(d_params);
+#ifdef NOTGH
+		cudaFree(d_fields);
+#endif
+
+#ifdef DEBUG
+		cuda_check_output("B output after scaling kernel");
+#endif
 
 		Bi->updateHalo();
+
+#ifdef DEBUG
+		cuda_check_output("B output after updateHalo");
+#endif
 				
 		computeVectorDiagnostics(*Bi, divB, curlB);			
 		COUT << " B diagnostics: max |divB| = " << divB << ", max |curlB| = " << curlB << endl;
+
+#ifdef DEBUG
+		cuda_check_output("B output after diagnostics");
+#endif
+
+#ifdef DEBUG
+		cuda_check_output("B output before save");
+#endif
 
 #ifdef EXTERNAL_IO
 		Bi->saveHDF5_server_write(NUMBER_OF_IO_FILES);
@@ -250,6 +306,9 @@ void writeSnapshots(metadata & sim, cosmology & cosmo, const double fourpiG, con
 			plan_Bi->execute(FFT_BACKWARD);
 			Bi->updateHalo();
 		}
+#ifdef DEBUG
+		cuda_check_output("B output after final FFT/updateHalo");
+#endif
 		nvtxRangePop();
 	}
 			
@@ -377,13 +436,32 @@ void writeSnapshots(metadata & sim, cosmology & cosmo, const double fourpiG, con
 
 		double params = 1. / (a * a * sim.numpts);
 		double * d_params;
+		Field<Real> ** d_fields = nullptr;
+#ifdef NOTGH
+		if (cudaMallocManaged(&d_params, sizeof(double)) != cudaSuccess)
+		{
+			throw std::runtime_error("CUDA malloc failed for params in B check output");
+		}
+		*d_params = params;
+		if (cudaMallocManaged(&d_fields, sizeof(Field<Real> *)) != cudaSuccess)
+		{
+			cudaFree(d_params);
+			throw std::runtime_error("CUDA malloc failed for fields in B check output");
+		}
+		d_fields[0] = Bi_check;
+#else
 		cudaMalloc((void **) &d_params, sizeof(double));
 		cudaMemcpy(d_params, &params, sizeof(double), cudaMemcpyDefault);
+		d_fields = &Bi_check;
+#endif
 
-		lattice_for_each<<<dim3(Bi_check->lattice().sizeLocal(1), Bi_check->lattice().sizeLocal(2)), 128>>>(lattice_multiply_functor<3>(), sim.numpts, &Bi_check, 1, d_params, nullptr, nullptr);
+		lattice_for_each<<<dim3(Bi_check->lattice().sizeLocal(1), Bi_check->lattice().sizeLocal(2)), 128>>>(lattice_multiply_functor<3>(), sim.numpts, d_fields, 1, d_params, nullptr, nullptr);
 
 		cudaDeviceSynchronize();
 		cudaFree(d_params);
+#ifdef NOTGH
+		cudaFree(d_fields);
+#endif
 			
 #ifdef EXTERNAL_IO
 		Bi_check->saveHDF5_server_write(NUMBER_OF_IO_FILES);
@@ -410,13 +488,9 @@ void writeSnapshots(metadata & sim, cosmology & cosmo, const double fourpiG, con
 		hdr.BoxSize = sim.boxsize / GADGET_LENGTH_CONVERSION;
 		hdr.flag_sfr = 0;
 		hdr.flag_cooling = 0;
-		hdr.flag_feedback = 0;
-		hdr.flag_age = 0;
-		hdr.flag_metals = 0;
-		for (int i = 0; i < 256 - 6 * 4 - 6 * 8 - 2 * 8 - 2 * 4 - 6 * 4 - 2 * 4 - 4 * 8 - 2 * 4 - 6 * 4; i++)
-			hdr.fill[i] = 0;
 		for (int i = 0; i < 6; i++)
 		{
+			hdr.fill[i] = 0;
 			hdr.npart[i] = 0;
 			hdr.npartTotal[i] = 0;
 			hdr.npartTotalHW[i] = 0;

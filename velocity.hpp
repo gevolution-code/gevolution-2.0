@@ -15,6 +15,10 @@
 #ifndef VELOCITY_HEADER
 #define VELOCITY_HEADER
 
+#if defined(DEBUG) || defined(NOTGH)
+#include <cuda_runtime.h>
+#endif
+
 #include <gsl/gsl_odeiv.h>
 #include <gsl/gsl_matrix.h>
 #include <gsl/gsl_errno.h>
@@ -140,6 +144,7 @@ void compute_vi_rescaled(cosmology & cosmo, Field<Real> * vi, Field<Real> * sour
 	}*/
 
     Field<Real> * fields[3] = {source, Ti0, vi};
+    Field<Real> ** d_fields = nullptr;
     double params[2] = {a, D1_prime(cosmo, a)/D1_prime(cosmo, a_old)*a/a_old};
     double * d_params;
 
@@ -150,11 +155,27 @@ void compute_vi_rescaled(cosmology & cosmo, Field<Real> * vi, Field<Real> * sour
     int block_x = vi->lattice().sizeLocal(1);
     int block_y = vi->lattice().sizeLocal(2);
 
-    lattice_for_each<<<dim3(block_x, block_y), 128>>>(compute_vi_rescaled_functor(), numpts, fields, 3, d_params, nullptr, nullptr);
+    #ifdef NOTGH
+    if (cudaMallocManaged(&d_fields, sizeof(Field<Real>*) * 3) != cudaSuccess)
+    {
+        cudaFree(d_params);
+        throw std::runtime_error("CUDA malloc failed for fields in compute_vi_rescaled");
+    }
+    d_fields[0] = source;
+    d_fields[1] = Ti0;
+    d_fields[2] = vi;
+    #else
+    d_fields = fields;
+    #endif
+
+    lattice_for_each<<<dim3(block_x, block_y), 128>>>(compute_vi_rescaled_functor(), numpts, d_fields, 3, d_params, nullptr, nullptr);
 
     cudaDeviceSynchronize();
 
     cudaFree(d_params);
+    #ifdef NOTGH
+    cudaFree(d_fields);
+    #endif
 }
 
 #endif

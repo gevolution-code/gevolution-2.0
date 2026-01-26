@@ -13,6 +13,10 @@
 #ifndef RADIATION_HEADER
 #define RADIATION_HEADER
 
+#if defined(DEBUG) || defined(NOTGH)
+#include <cuda_runtime.h>
+#endif
+
 #ifdef HAVE_CLASS
 
 //////////////////////////
@@ -227,13 +231,23 @@ void projection_T00_project(background & class_background, perturbs & class_pert
 
 		Field<Real> * fieldptr = &source;
 		double * d_params;
+		Field<Real> ** d_fields = nullptr;
 
 		cudaMalloc(&d_params, sizeof(double));
 		cudaMemcpy(d_params, &Omega_ncdm, sizeof(double), cudaMemcpyDefault);
 
+		#ifdef NOTGH
+		cudaMalloc(&d_fields, sizeof(Field<Real> *));
+		cudaMemcpy(d_fields, &fieldptr, sizeof(Field<Real> *), cudaMemcpyDefault);
+		lattice_for_each<<<dim3(source.lattice().sizeLocal(1), source.lattice().sizeLocal(2)), 128>>>(lattice_add_functor(), sim.numpts, d_fields, 1, d_params, nullptr, nullptr);
+		#else
 		lattice_for_each<<<dim3(source.lattice().sizeLocal(1), source.lattice().sizeLocal(2)), 128>>>(lattice_add_functor(), sim.numpts, &fieldptr, 1, d_params, nullptr, nullptr);
+		#endif
 
 		cudaDeviceSynchronize();
+		#ifdef NOTGH
+		cudaFree(d_fields);
+		#endif
 		cudaFree(d_params);
 	}
 }

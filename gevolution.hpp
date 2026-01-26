@@ -31,6 +31,9 @@
 
 #include "lattice_loop.hpp"
 #include <cuda/atomic>
+#if defined(DEBUG) || defined(NOTGH)
+#include <cuda_runtime.h>
+#endif
 
 #ifndef Cplx
 #define Cplx Imag
@@ -118,19 +121,40 @@ void prepareFTsource(Field<Real> & phi, Field<Real> & Tij, Field<Real> & Sij, co
 	Field<Real> * fields[3] = {&Sij, &Tij, &phi};
 	double params = coeff;
 	double * d_params;
+	Field<Real> ** d_fields = nullptr;
 
+	#ifdef NOTGH
+	if (cudaMallocManaged(&d_params, sizeof(double)) != cudaSuccess)
+	{
+		throw std::runtime_error("CUDA malloc failed for params in prepareFTsource_Tij");
+	}
+	*d_params = params;
+	if (cudaMallocManaged(&d_fields, sizeof(Field<Real> *) * 3) != cudaSuccess)
+	{
+		cudaFree(d_params);
+		throw std::runtime_error("CUDA malloc failed for fields in prepareFTsource_Tij");
+	}
+	d_fields[0] = &Sij;
+	d_fields[1] = &Tij;
+	d_fields[2] = &phi;
+	#else
 	cudaMalloc(&d_params, sizeof(double));
 	cudaMemcpy(d_params, &params, sizeof(double), cudaMemcpyDefault);
+	d_fields = fields;
+	#endif
 
 	int numpts = phi.lattice().sizeLocal(0);
 	int block_x = phi.lattice().sizeLocal(1);
 	int block_y = phi.lattice().sizeLocal(2);
 
-	lattice_for_each<<<dim3(block_x, block_y), 128>>>(prepareFTsource_Tij_functor(), numpts, fields, 3, d_params, nullptr, nullptr);
+	lattice_for_each<<<dim3(block_x, block_y), 128>>>(prepareFTsource_Tij_functor(), numpts, d_fields, 3, d_params, nullptr, nullptr);
 
 	cudaDeviceSynchronize();
 
 	cudaFree(d_params);
+	#ifdef NOTGH
+	cudaFree(d_fields);
+	#endif
 }
 
 //////////////////////////
@@ -186,19 +210,56 @@ double prepareFTsource(Field<Real> & phi, Field<Real> & chi, Field<Real> & sourc
 	double * d_params;
 	double * d_sum;
 	int * d_reduce;
+	Field<Real> ** d_fields = nullptr;
 
+	#ifdef NOTGH
+	if (cudaMallocManaged(&d_params, 4 * sizeof(double)) != cudaSuccess)
+	{
+		throw std::runtime_error("CUDA malloc failed for params in prepareFTsource_T00");
+	}
+	if (cudaMallocManaged(&d_sum, sizeof(double)) != cudaSuccess)
+	{
+		cudaFree(d_params);
+		throw std::runtime_error("CUDA malloc failed for sum in prepareFTsource_T00");
+	}
+	if (cudaMallocManaged(&d_reduce, sizeof(int)) != cudaSuccess)
+	{
+		cudaFree(d_params);
+		cudaFree(d_sum);
+		throw std::runtime_error("CUDA malloc failed for reduce in prepareFTsource_T00");
+	}
+	if (cudaMallocManaged(&d_fields, sizeof(Field<Real> *) * 4) != cudaSuccess)
+	{
+		cudaFree(d_params);
+		cudaFree(d_sum);
+		cudaFree(d_reduce);
+		throw std::runtime_error("CUDA malloc failed for fields in prepareFTsource_T00");
+	}
+	d_params[0] = params[0];
+	d_params[1] = params[1];
+	d_params[2] = params[2];
+	d_params[3] = params[3];
+	*d_sum = sum;
+	*d_reduce = reduce;
+	d_fields[0] = &result;
+	d_fields[1] = &source;
+	d_fields[2] = &phi;
+	d_fields[3] = &chi;
+	#else
 	cudaMalloc(&d_params, 4 * sizeof(double));
 	cudaMalloc(&d_sum, sizeof(double));
 	cudaMalloc(&d_reduce, sizeof(int));
 	cudaMemcpy(d_params, params, 4 * sizeof(double), cudaMemcpyHostToDevice);
 	cudaMemcpy(d_sum, &sum, sizeof(double), cudaMemcpyHostToDevice);
 	cudaMemcpy(d_reduce, &reduce, sizeof(int), cudaMemcpyHostToDevice);
+	d_fields = fields;
+	#endif
 
 	int numpts = result.lattice().sizeLocal(0);
 	int block_x = result.lattice().sizeLocal(1);
 	int block_y = result.lattice().sizeLocal(2);
 
-	lattice_for_each<prepareFTsource_T00_functor, 1><<<dim3(block_x, block_y), 128>>>(prepareFTsource_T00_functor(), numpts, fields, 4, d_params, d_sum, d_reduce);
+	lattice_for_each<prepareFTsource_T00_functor, 1><<<dim3(block_x, block_y), 128>>>(prepareFTsource_T00_functor(), numpts, d_fields, 4, d_params, d_sum, d_reduce);
 
 	cudaDeviceSynchronize();
 
@@ -206,6 +267,9 @@ double prepareFTsource(Field<Real> & phi, Field<Real> & chi, Field<Real> & sourc
 	cudaFree(d_params);
 	cudaFree(d_sum);
 	cudaFree(d_reduce);
+	#ifdef NOTGH
+	cudaFree(d_fields);
+	#endif
 
 	parallel.sum<double>(sum);
 
@@ -1540,15 +1604,36 @@ void projection_comm1(Field<Real> * field)
 	int sizeLocal[3] = {field->lattice().sizeLocal(0), field->lattice().sizeLocal(1), field->lattice().sizeLocal(2)};
 	int halo = field->lattice().halo();
 	long sizeLocalGross[3] = {sizeLocal[0]+2*halo, sizeLocal[1]+2*halo, sizeLocal[2]+2*halo};
+#ifdef NOTGH
+	static long * sizeLocalGross_dev = nullptr;
+	if (sizeLocalGross_dev == nullptr)
+	{
+		if (cudaMalloc(&sizeLocalGross_dev, 3 * sizeof(long)) != cudaSuccess)
+		{
+			throw std::runtime_error("CUDA malloc failed for sizeLocalGross in projection_comm1");
+		}
+	}
+	cudaMemcpy(sizeLocalGross_dev, sizeLocalGross, 3 * sizeof(long), cudaMemcpyHostToDevice);
+#else
+	long * sizeLocalGross_dev = sizeLocalGross;
+#endif
 	
 	long buffer_size_y = static_cast<long>(sizeLocal[2]+1) * static_cast<long>(sizeLocal[0]) * static_cast<long>(field->components());
 	long buffer_size_z = static_cast<long>(sizeLocal[1]) * static_cast<long>(sizeLocal[0]) * static_cast<long>(field->components());
 	long buffer_size = buffer_size_y>buffer_size_z ? buffer_size_y : buffer_size_z;
 
-	Real * buffer = (Real*) malloc(2*sizeof(Real)*buffer_size);
+	Real * buffer = nullptr;
+#ifdef NOTGH
+	if (cudaMallocManaged(&buffer, 2 * sizeof(Real) * buffer_size) != cudaSuccess)
+	{
+		throw std::runtime_error("CUDA malloc failed for buffer in projection_comm1");
+	}
+#else
+	buffer = (Real*) malloc(2*sizeof(Real)*buffer_size);
+#endif
 	Real * rec_buffer = buffer + buffer_size;
 
-	projection_comm1_localhalo<<<sizeLocal[2]+2, 128>>>(field, sizeLocalGross, halo);
+	projection_comm1_localhalo<<<sizeLocal[2]+2, 128>>>(field, sizeLocalGross_dev, halo);
 
 	auto success = cudaDeviceSynchronize();
 
@@ -1558,7 +1643,7 @@ void projection_comm1(Field<Real> * field)
 		throw std::runtime_error("Error in projection_comm1_localhalo");
 	}
 
-	projection_comm1_pack_y<<<sizeLocal[2]+1, 128>>>(field, sizeLocalGross, halo, buffer);
+	projection_comm1_pack_y<<<sizeLocal[2]+1, 128>>>(field, sizeLocalGross_dev, halo, buffer);
 
 	success = cudaDeviceSynchronize();
 
@@ -1570,7 +1655,7 @@ void projection_comm1(Field<Real> * field)
 
 	parallel.sendUp_dim1(buffer, rec_buffer, buffer_size_y);
 
-	projection_comm1_unpack_y<<<sizeLocal[2]+1, 128>>>(field, sizeLocalGross, halo, rec_buffer);
+	projection_comm1_unpack_y<<<sizeLocal[2]+1, 128>>>(field, sizeLocalGross_dev, halo, rec_buffer);
 
 	success = cudaDeviceSynchronize();
 
@@ -1580,7 +1665,7 @@ void projection_comm1(Field<Real> * field)
 		throw std::runtime_error("Error in projection_comm1_unpack_y");
 	}
 
-	projection_comm1_pack_z<<<sizeLocal[1], 128>>>(field, sizeLocalGross, halo, buffer);
+	projection_comm1_pack_z<<<sizeLocal[1], 128>>>(field, sizeLocalGross_dev, halo, buffer);
 
 	success = cudaDeviceSynchronize();
 
@@ -1592,7 +1677,7 @@ void projection_comm1(Field<Real> * field)
 
 	parallel.sendUp_dim0(buffer, rec_buffer, buffer_size_z);
 
-	projection_comm1_unpack_z<<<sizeLocal[1], 128>>>(field, sizeLocalGross, halo, rec_buffer);
+	projection_comm1_unpack_z<<<sizeLocal[1], 128>>>(field, sizeLocalGross_dev, halo, rec_buffer);
 
 	success = cudaDeviceSynchronize();
 
@@ -1602,7 +1687,11 @@ void projection_comm1(Field<Real> * field)
 		throw std::runtime_error("Error in projection_comm1_unpack_z");
 	}
 
+	#ifdef NOTGH
+	cudaFree(buffer);
+	#else
 	free(buffer);
+	#endif
 }
 
 void projection_Tij_comm2(Field<Real> * field)
@@ -1610,19 +1699,40 @@ void projection_Tij_comm2(Field<Real> * field)
 	int sizeLocal[3] = {field->lattice().sizeLocal(0), field->lattice().sizeLocal(1), field->lattice().sizeLocal(2)};
 	int halo = field->lattice().halo();
 	long sizeLocalGross[3] = {sizeLocal[0]+2*halo, sizeLocal[1]+2*halo, sizeLocal[2]+2*halo};
+#ifdef NOTGH
+	static long * sizeLocalGross_dev = nullptr;
+	if (sizeLocalGross_dev == nullptr)
+	{
+		if (cudaMalloc(&sizeLocalGross_dev, 3 * sizeof(long)) != cudaSuccess)
+		{
+			throw std::runtime_error("CUDA malloc failed for sizeLocalGross in projection_Tij_comm2");
+		}
+	}
+	cudaMemcpy(sizeLocalGross_dev, sizeLocalGross, 3 * sizeof(long), cudaMemcpyHostToDevice);
+#else
+	long * sizeLocalGross_dev = sizeLocalGross;
+#endif
 	
 	long buffer_size_y = static_cast<long>(sizeLocal[2]+2) * static_cast<long>(sizeLocal[0]) * 6L;
 	long buffer_size_z = static_cast<long>(sizeLocal[1]) * static_cast<long>(sizeLocal[0]) * 6L;
 	long buffer_size = buffer_size_y>buffer_size_z ? buffer_size_y : buffer_size_z;
 
-	Real * buffer = (Real*) malloc(3*sizeof(Real)*buffer_size);
+	Real * buffer = nullptr;
+#ifdef NOTGH
+	if (cudaMallocManaged(&buffer, 3 * sizeof(Real) * buffer_size) != cudaSuccess)
+	{
+		throw std::runtime_error("CUDA malloc failed for buffer in projection_Tij_comm2");
+	}
+#else
+	buffer = (Real*) malloc(3*sizeof(Real)*buffer_size);
+#endif
 	Real * rec_buffer = buffer + buffer_size;
 	Real * buffer2 = rec_buffer + buffer_size;
 	Real * rec_buffer2 = buffer2 + buffer_size/2;
 
-	projection_comm1_localhalo<<<sizeLocal[2]+2, 128>>>(field, sizeLocalGross, halo);
+	projection_comm1_localhalo<<<sizeLocal[2]+2, 128>>>(field, sizeLocalGross_dev, halo);
 
-	projection_comm2_localhalo<<<sizeLocal[2]+2, 128>>>(field, sizeLocalGross, halo);
+	projection_comm2_localhalo<<<sizeLocal[2]+2, 128>>>(field, sizeLocalGross_dev, halo);
 
 	auto success = cudaDeviceSynchronize();
 
@@ -1632,7 +1742,7 @@ void projection_Tij_comm2(Field<Real> * field)
 		throw std::runtime_error("Error in projection_comm[1/2]_localhalo");
 	}
 
-	projection_comm2_pack_y<<<sizeLocal[2]+2, 128>>>(field, sizeLocalGross, halo, buffer, buffer2);
+	projection_comm2_pack_y<<<sizeLocal[2]+2, 128>>>(field, sizeLocalGross_dev, halo, buffer, buffer2);
 
 	success = cudaDeviceSynchronize();
 
@@ -1644,7 +1754,7 @@ void projection_Tij_comm2(Field<Real> * field)
 
 	parallel.sendUpDown_dim1(buffer, rec_buffer, buffer_size_y, buffer2, rec_buffer2, buffer_size_y/2);
 
-	projection_comm2_unpack_y<<<sizeLocal[2]+2, 128>>>(field, sizeLocalGross, halo, rec_buffer, rec_buffer2);
+	projection_comm2_unpack_y<<<sizeLocal[2]+2, 128>>>(field, sizeLocalGross_dev, halo, rec_buffer, rec_buffer2);
 
 	success = cudaDeviceSynchronize();
 
@@ -1654,9 +1764,9 @@ void projection_Tij_comm2(Field<Real> * field)
 		throw std::runtime_error("Error in projection_comm2_unpack_y");
 	}
 
-	projection_comm1_pack_z<<<sizeLocal[1], 128>>>(field, sizeLocalGross, halo, buffer);
+	projection_comm1_pack_z<<<sizeLocal[1], 128>>>(field, sizeLocalGross_dev, halo, buffer);
 
-	projection_comm2_pack_z<<<sizeLocal[1], 128>>>(field, sizeLocalGross, halo, buffer2);
+	projection_comm2_pack_z<<<sizeLocal[1], 128>>>(field, sizeLocalGross_dev, halo, buffer2);
 
 	success = cudaDeviceSynchronize();
 
@@ -1668,9 +1778,9 @@ void projection_Tij_comm2(Field<Real> * field)
 
 	parallel.sendUpDown_dim0(buffer, rec_buffer, buffer_size_z, buffer2, rec_buffer2, buffer_size_z/2);
 
-	projection_comm1_unpack_z<<<sizeLocal[1], 128>>>(field, sizeLocalGross, halo, rec_buffer);
+	projection_comm1_unpack_z<<<sizeLocal[1], 128>>>(field, sizeLocalGross_dev, halo, rec_buffer);
 
-	projection_comm2_unpack_z<<<sizeLocal[1], 128>>>(field, sizeLocalGross, halo, rec_buffer2);
+	projection_comm2_unpack_z<<<sizeLocal[1], 128>>>(field, sizeLocalGross_dev, halo, rec_buffer2);
 
 	success = cudaDeviceSynchronize();
 
@@ -1680,7 +1790,12 @@ void projection_Tij_comm2(Field<Real> * field)
 		throw std::runtime_error("Error in projection_comm[1/2]_unpack_z");
 	}
 
+	#ifdef NOTGH
+	cudaFree(buffer);
+	cudaFree(sizeLocalGross_dev);
+	#else
 	free(buffer);
+	#endif
 }
 
 #define projection_T00_comm projection_comm1
@@ -1850,11 +1965,60 @@ void projection_T00_project(perfParticles<part_simple, part_simple_info> * pcls,
 	fields[0] = T00;
 	fields[1] = phi;
 
+#ifdef NOTGH
+	// Preflight: catch prior kernel failures before we attribute them to malloc.
+	cudaError_t pre_err = cudaGetLastError();
+	if (pre_err != cudaSuccess)
+	{
+		throw std::runtime_error(string("CUDA preflight error before projection_T00_project: ") + cudaGetErrorString(pre_err));
+	}
+	pre_err = cudaDeviceSynchronize();
+	if (pre_err != cudaSuccess)
+	{
+		throw std::runtime_error(string("CUDA preflight sync error before projection_T00_project: ") + cudaGetErrorString(pre_err));
+	}
+
+	double params_host[2] = {a, coeff};
+	Field<Real> * fields_host[2] = {T00, phi};
+	double * params_dev = nullptr;
+	Field<Real> ** fields_dev = nullptr;
+
+	cudaError_t err = cudaMalloc(&params_dev, 2 * sizeof(double));
+	if (err != cudaSuccess)
+	{
+		throw std::runtime_error(string("CUDA malloc failed for params in projection_T00_project: ") + cudaGetErrorString(err));
+	}
+	err = cudaMemcpy(params_dev, params_host, 2 * sizeof(double), cudaMemcpyHostToDevice);
+	if (err != cudaSuccess)
+	{
+		cudaFree(params_dev);
+		throw std::runtime_error(string("CUDA memcpy failed for params in projection_T00_project: ") + cudaGetErrorString(err));
+	}
+
+	err = cudaMalloc(&fields_dev, 2 * sizeof(Field<Real> *));
+	if (err != cudaSuccess)
+	{
+		cudaFree(params_dev);
+		throw std::runtime_error(string("CUDA malloc failed for fields in projection_T00_project: ") + cudaGetErrorString(err));
+	}
+	err = cudaMemcpy(fields_dev, fields_host, 2 * sizeof(Field<Real> *), cudaMemcpyHostToDevice);
+	if (err != cudaSuccess)
+	{
+		cudaFree(fields_dev);
+		cudaFree(params_dev);
+		throw std::runtime_error(string("CUDA memcpy failed for fields in projection_T00_project: ") + cudaGetErrorString(err));
+	}
+
+	pcls->projectParticles(particle_T00_project_functor(), fields_dev, (phi == nullptr ? 1 : 2), params_dev);
+	cudaFree(fields_dev);
+	cudaFree(params_dev);
+#else
 	double params[2];
 	params[0] = a;
 	params[1] = coeff;
 
 	pcls->projectParticles(particle_T00_project_functor(), fields, (phi == nullptr ? 1 : 2), params);
+#endif
 }
 
 
@@ -2194,7 +2358,19 @@ void projection_T0i_project(perfParticles<part_simple, part_simple_info> * pcls,
 	fields[0] = T0i;
 	fields[1] = phi;
 
+#ifdef NOTGH
+	double * coeff_dev = nullptr;
+	if (cudaMallocManaged(&coeff_dev, sizeof(double)) != cudaSuccess)
+	{
+		throw std::runtime_error("CUDA malloc failed for coeff in projection_T0i_project");
+	}
+	*coeff_dev = coeff;
+	
+	pcls->projectParticles(particle_T0i_project_functor(), fields, (phi == nullptr ? 1 : 2), coeff_dev);
+	cudaFree(coeff_dev);
+#else
 	pcls->projectParticles(particle_T0i_project_functor(), fields, (phi == nullptr ? 1 : 2), &coeff);
+#endif
 }
 
 void projection_T0i_project_Async(perfParticles<part_simple, part_simple_info> * pcls, Field<Real> ** fields, int nfield, double * params)
@@ -2960,6 +3136,35 @@ void projection_Tij_project(perfParticles<part_simple, part_simple_info> * pcls,
 	fields[0] = Tij;
 	fields[1] = phi;
 
+#ifdef NOTGH
+	double * params = nullptr;
+	if (cudaMallocManaged(&params, 7 * sizeof(double)) != cudaSuccess)
+	{
+		throw std::runtime_error("CUDA malloc failed for params in projection_Tij_project");
+	}
+	params[0] = a;
+	params[1] = coeff;
+
+	if (hij_hom != nullptr)
+	{
+		params[2] = hij_hom[0];
+		params[3] = hij_hom[1];
+		params[4] = hij_hom[2];
+		params[5] = hij_hom[3];
+		params[6] = hij_hom[4];
+	}
+	else
+	{
+		params[2] = 0.;
+		params[3] = 0.;
+		params[4] = 0.;
+		params[5] = 0.;
+		params[6] = 0.;
+	}
+
+	pcls->projectParticles(particle_Tij_project_functor(), fields, (phi == nullptr ? 1 : 2), params);
+	cudaFree(params);
+#else
 	double params[7];
 	params[0] = a;
 	params[1] = coeff;
@@ -2982,6 +3187,7 @@ void projection_Tij_project(perfParticles<part_simple, part_simple_info> * pcls,
 	}
 
 	pcls->projectParticles(particle_Tij_project_functor(), fields, (phi == nullptr ? 1 : 2), params);
+#endif
 }
 
 void projection_Tij_project_Async(perfParticles<part_simple, part_simple_info> * pcls, Field<Real> ** fields, int nfield, double * params)
@@ -3287,7 +3493,19 @@ void projection_Ti0_project(perfParticles<part_simple, part_simple_info> * pcls,
 		if (chi != nullptr) nfield++;
 	}
 
+#ifdef NOTGH
+	double * coeff_dev = nullptr;
+	if (cudaMallocManaged(&coeff_dev, sizeof(double)) != cudaSuccess)
+	{
+		throw std::runtime_error("CUDA malloc failed for coeff in projection_Ti0_project");
+	}
+	*coeff_dev = coeff;
+
+	pcls->projectParticles(particle_Ti0_project_functor(), fields, nfield, coeff_dev);
+	cudaFree(coeff_dev);
+#else
 	pcls->projectParticles(particle_Ti0_project_functor(), fields, nfield, &coeff);
+#endif
 }
 
 

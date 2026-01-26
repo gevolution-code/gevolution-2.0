@@ -35,6 +35,9 @@
 #include <thrust/sort.h>
 #include <thrust/device_vector.h>
 #include <nvtx3/nvToolsExt.h>
+#if defined(DEBUG) || defined(NOTGH)
+#include <cuda_runtime.h>
+#endif
 #include <stdlib.h>
 #include <set>
 #include <vector>
@@ -250,27 +253,138 @@ int main(int argc, char **argv)
 	box[1] = sim.numpts;
 	box[2] = sim.numpts;
 	
+#ifdef NOTGH
+	Lattice * lat_p = nullptr;
+	Lattice * latFT_p = nullptr;
+	if (cudaMallocManaged(&lat_p, sizeof(Lattice)) != cudaSuccess)
+	{
+		COUT << " error: cudaMallocManaged failed for lat" << endl;
+		parallel.abortForce();
+	}
+	new (lat_p) Lattice(3, box, GRADIENT_ORDER);
+	if (cudaMallocManaged(&latFT_p, sizeof(Lattice)) != cudaSuccess)
+	{
+		COUT << " error: cudaMallocManaged failed for latFT" << endl;
+		parallel.abortForce();
+	}
+	new (latFT_p) Lattice();
+	latFT_p->initializeRealFFT(*lat_p, 0);
+	#define lat (*lat_p)
+	#define latFT (*latFT_p)
+#else
 	Lattice lat(3,box,GRADIENT_ORDER);
 	Lattice latFT;
 	latFT.initializeRealFFT(lat,0);
+#endif
 	
+#ifdef NOTGH
+	perfParticles_gevolution<part_simple,part_simple_info> * pcls_cdm = nullptr;
+	perfParticles_gevolution<part_simple,part_simple_info> * pcls_b = nullptr;
+	if (cudaMallocManaged(&pcls_cdm, sizeof(perfParticles_gevolution<part_simple,part_simple_info>)) != cudaSuccess)
+	{
+		COUT << " error: cudaMallocManaged failed for pcls_cdm" << endl;
+		parallel.abortForce();
+	}
+	if (cudaMallocManaged(&pcls_b, sizeof(perfParticles_gevolution<part_simple,part_simple_info>)) != cudaSuccess)
+	{
+		COUT << " error: cudaMallocManaged failed for pcls_b" << endl;
+		parallel.abortForce();
+	}
+	new (pcls_cdm) perfParticles_gevolution<part_simple,part_simple_info>();
+	new (pcls_b) perfParticles_gevolution<part_simple,part_simple_info>();
+	#define PCLS_CDM_PTR (pcls_cdm)
+	#define PCLS_B_PTR (pcls_b)
+	#define PCLS_CDM_OBJ (*pcls_cdm)
+	#define PCLS_B_OBJ (*pcls_b)
+#else
 	perfParticles_gevolution<part_simple,part_simple_info> pcls_cdm;
 	perfParticles_gevolution<part_simple,part_simple_info> pcls_b;
+	#define PCLS_CDM_PTR (&pcls_cdm)
+	#define PCLS_B_PTR (&pcls_b)
+	#define PCLS_CDM_OBJ (pcls_cdm)
+	#define PCLS_B_OBJ (pcls_b)
+#endif
 	Particles_gevolution<part_simple,part_simple_info,part_simple_dataType> * pcls_ncdm = nullptr;
 	if (cosmo.num_ncdm > 0) pcls_ncdm = new Particles_gevolution<part_simple,part_simple_info,part_simple_dataType>[cosmo.num_ncdm];
 
+#ifdef NOTGH
+	Field<Real> ** update_cdm_fields = nullptr;
+	Field<Real> ** update_b_fields = nullptr;
+	Field<Real> ** update_ncdm_fields = nullptr;
+	Field<Real> ** project_Tij_fields = nullptr;
+	Field<Real> ** project_T0i_fields = nullptr;
+	if (cudaMallocManaged(&update_cdm_fields, 3 * sizeof(Field<Real>*)) != cudaSuccess ||
+		cudaMallocManaged(&update_b_fields, 3 * sizeof(Field<Real>*)) != cudaSuccess ||
+		cudaMallocManaged(&update_ncdm_fields, 3 * sizeof(Field<Real>*)) != cudaSuccess ||
+		cudaMallocManaged(&project_Tij_fields, 2 * sizeof(Field<Real>*)) != cudaSuccess ||
+		cudaMallocManaged(&project_T0i_fields, 2 * sizeof(Field<Real>*)) != cudaSuccess)
+	{
+		COUT << " error: cudaMallocManaged failed for field pointer arrays" << endl;
+		parallel.abortForce();
+	}
+#else
 	Field<Real> * update_cdm_fields[3];
 	Field<Real> * update_b_fields[3];
 	Field<Real> * update_ncdm_fields[3];
 	Field<Real> * project_Tij_fields[2];
 	Field<Real> * project_T0i_fields[2];
+
+#endif
+#ifdef NOTGH
+	double * f_params = nullptr;
+	if (cudaMallocManaged(&f_params, 7 * sizeof(double)) != cudaSuccess)
+	{
+		COUT << " error: cudaMallocManaged failed for f_params" << endl;
+		parallel.abortForce();
+	}
+	for (int i = 0; i < 7; i++) f_params[i] = 0.;
+#else
 	double f_params[7] = {0., 0., 0., 0., 0., 0., 0.};
+#endif
 	set<long> ** IDbacklog;
 
 	IDbacklog = new set<long> * [sim.num_IDlogs];
 	for (int i = 0; i < sim.num_IDlogs; i++)
 		IDbacklog[i] = new set<long> [MAX_PCL_SPECIES];
 
+#ifdef NOTGH
+	Field<Real> * phi_p = nullptr;
+	Field<Real> * source_p = nullptr;
+	Field<Real> * chi_p = nullptr;
+	Field<Real> * Sij_p = nullptr;
+	Field<Real> * Bi_p = nullptr;
+	Field<Cplx> * scalarFT_p = nullptr;
+	Field<Cplx> * SijFT_p = nullptr;
+	Field<Cplx> * BiFT_p = nullptr;
+	if (cudaMallocManaged(&phi_p, sizeof(Field<Real>)) != cudaSuccess ||
+		cudaMallocManaged(&source_p, sizeof(Field<Real>)) != cudaSuccess ||
+		cudaMallocManaged(&chi_p, sizeof(Field<Real>)) != cudaSuccess ||
+		cudaMallocManaged(&Sij_p, sizeof(Field<Real>)) != cudaSuccess ||
+		cudaMallocManaged(&Bi_p, sizeof(Field<Real>)) != cudaSuccess ||
+		cudaMallocManaged(&scalarFT_p, sizeof(Field<Cplx>)) != cudaSuccess ||
+		cudaMallocManaged(&SijFT_p, sizeof(Field<Cplx>)) != cudaSuccess ||
+		cudaMallocManaged(&BiFT_p, sizeof(Field<Cplx>)) != cudaSuccess)
+	{
+		COUT << " error: cudaMallocManaged failed for fields" << endl;
+		parallel.abortForce();
+	}
+	new (phi_p) Field<Real>();
+	new (source_p) Field<Real>();
+	new (chi_p) Field<Real>();
+	new (Sij_p) Field<Real>();
+	new (Bi_p) Field<Real>();
+	new (scalarFT_p) Field<Cplx>();
+	new (SijFT_p) Field<Cplx>();
+	new (BiFT_p) Field<Cplx>();
+	#define phi (*phi_p)
+	#define source (*source_p)
+	#define chi (*chi_p)
+	#define Sij (*Sij_p)
+	#define Bi (*Bi_p)
+	#define scalarFT (*scalarFT_p)
+	#define SijFT (*SijFT_p)
+	#define BiFT (*BiFT_p)
+#else
 	Field<Real> phi;
 	Field<Real> source;
 	Field<Real> chi;
@@ -279,6 +393,7 @@ int main(int argc, char **argv)
 	Field<Cplx> scalarFT;
 	Field<Cplx> SijFT;
 	Field<Cplx> BiFT;
+#endif
 	Field<Cplx> * zetaFT = NULL;
 	source.initialize(lat,1);
 	phi.initialize(lat,1);
@@ -295,15 +410,45 @@ int main(int argc, char **argv)
 	BiFT.initialize(latFT,3);
 	PlanFFT<Cplx> plan_Bi(&Bi, &BiFT);
 #ifdef CHECK_B
+#ifdef NOTGH
+	Field<Real> * Bi_check_p = nullptr;
+	Field<Cplx> * BiFT_check_p = nullptr;
+	if (cudaMallocManaged(&Bi_check_p, sizeof(Field<Real>)) != cudaSuccess ||
+		cudaMallocManaged(&BiFT_check_p, sizeof(Field<Cplx>)) != cudaSuccess)
+	{
+		COUT << " error: cudaMallocManaged failed for Bi_check" << endl;
+		parallel.abortForce();
+	}
+	new (Bi_check_p) Field<Real>();
+	new (BiFT_check_p) Field<Cplx>();
+	#define Bi_check (*Bi_check_p)
+	#define BiFT_check (*BiFT_check_p)
+#else
 	Field<Real> Bi_check;
 	Field<Cplx> BiFT_check;
+#endif
 	Bi_check.initialize(lat,3);
 	BiFT_check.initialize(latFT,3);
 	PlanFFT<Cplx> plan_Bi_check(&Bi_check, &BiFT_check);
 #endif
 #ifdef VELOCITY
+#ifdef NOTGH
+	Field<Real> * vi_p = nullptr;
+	Field<Cplx> * viFT_p = nullptr;
+	if (cudaMallocManaged(&vi_p, sizeof(Field<Real>)) != cudaSuccess ||
+		cudaMallocManaged(&viFT_p, sizeof(Field<Cplx>)) != cudaSuccess)
+	{
+		COUT << " error: cudaMallocManaged failed for vi" << endl;
+		parallel.abortForce();
+	}
+	new (vi_p) Field<Real>();
+	new (viFT_p) Field<Cplx>();
+	#define vi (*vi_p)
+	#define viFT (*viFT_p)
+#else
 	Field<Real> vi;
 	Field<Cplx> viFT;
+#endif
 	vi.initialize(lat,3);
 	viFT.initialize(latFT,3);
 	PlanFFT<Cplx> plan_vi(&vi, &viFT);
@@ -358,24 +503,24 @@ int main(int argc, char **argv)
 	nvtxRangePushA("IC generation");
 	
 	if (ic.generator == ICGEN_BASIC)
-		generateIC_basic(sim, ic, cosmo, fourpiG, &pcls_cdm, &pcls_b, pcls_ncdm, maxvel, &phi, &chi, &Bi, &source, &Sij, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij, 
+		generateIC_basic(sim, ic, cosmo, fourpiG, PCLS_CDM_PTR, PCLS_B_PTR, pcls_ncdm, maxvel, &phi, &chi, &Bi, &source, &Sij, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij, 
 #ifdef HAVE_CLASS
 		class_background, class_perturbs,
 #endif		
 		params, numparam); // generates ICs on the fly
 	else if (ic.generator == ICGEN_READ_FROM_DISK)
-		readIC(sim, ic, cosmo, fourpiG, a, tau, dtau, dtau_old, &pcls_cdm, &pcls_b, pcls_ncdm, maxvel, &phi, &chi, &Bi, &source, &Sij, zetaFT, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij, cycle, snapcount, pkcount, restartcount, IDbacklog);
+		readIC(sim, ic, cosmo, fourpiG, a, tau, dtau, dtau_old, PCLS_CDM_PTR, PCLS_B_PTR, pcls_ncdm, maxvel, &phi, &chi, &Bi, &source, &Sij, zetaFT, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij, cycle, snapcount, pkcount, restartcount, IDbacklog);
 #ifdef ICGEN_RELIC
 	else if (ic.generator == ICGEN_RELIC)
-		generateIC_relic(sim, ic, cosmo, fourpiG, &pcls_cdm, &pcls_b, pcls_ncdm, maxvel, &phi, &chi, &Bi, &source, &Sij, zetaFT, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij, params, numparam);
+		generateIC_relic(sim, ic, cosmo, fourpiG, PCLS_CDM_PTR, PCLS_B_PTR, pcls_ncdm, maxvel, &phi, &chi, &Bi, &source, &Sij, zetaFT, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij, params, numparam);
 #endif
 #ifdef ICGEN_PREVOLUTION
 	else if (ic.generator == ICGEN_PREVOLUTION)
-		generateIC_prevolution(sim, ic, cosmo, fourpiG, a, tau, dtau, dtau_old, &pcls_cdm, &pcls_b, pcls_ncdm, maxvel, &phi, &chi, &Bi, &source, &Sij, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij, params, numparam);
+		generateIC_prevolution(sim, ic, cosmo, fourpiG, a, tau, dtau, dtau_old, PCLS_CDM_PTR, PCLS_B_PTR, pcls_ncdm, maxvel, &phi, &chi, &Bi, &source, &Sij, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij, params, numparam);
 #endif
 #ifdef ICGEN_FALCONIC
 	else if (ic.generator == ICGEN_FALCONIC)
-		maxvel[0] = generateIC_FalconIC(sim, ic, cosmo, fourpiG, dtau, &pcls_cdm, pcls_ncdm, maxvel+1, &phi, &source, &chi, &Bi, &source, &Sij, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_source, &plan_chi, &plan_Bi, &plan_source, &plan_Sij);
+		maxvel[0] = generateIC_FalconIC(sim, ic, cosmo, fourpiG, dtau, PCLS_CDM_PTR, pcls_ncdm, maxvel+1, &phi, &source, &chi, &Bi, &source, &Sij, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_source, &plan_chi, &plan_Bi, &plan_source, &plan_Sij);
 #endif
 	else
 	{
@@ -435,6 +580,25 @@ int main(int argc, char **argv)
 	COUT << COLORTEXT_GREEN << " initialization complete." << COLORTEXT_RESET << " BENCHMARK: " << hourMinSec(initialization_time) << endl << endl;
 #else
 	COUT << COLORTEXT_GREEN << " initialization complete." << COLORTEXT_RESET << endl << endl;
+#endif
+
+#ifdef DEBUG
+	auto cuda_check_main = [&](const char * label) {
+		cudaError_t err = cudaGetLastError();
+		if (err != cudaSuccess)
+		{
+			COUT << " CUDA error after " << label << ": " << cudaGetErrorString(err) << endl;
+			parallel.abortForce();
+		}
+		err = cudaDeviceSynchronize();
+		if (err != cudaSuccess)
+		{
+			COUT << " CUDA sync error after " << label << ": " << cudaGetErrorString(err) << endl;
+			parallel.abortForce();
+		}
+	};
+	// Catch any latent errors before the main loop begins.
+	cuda_check_main("initialization complete");
 #endif
 
 #ifdef HAVE_CLASS
@@ -546,19 +710,25 @@ int main(int argc, char **argv)
 #ifdef BENCHMARK		
 		cycle_start_time = MPI_Wtime();
 #endif
+		#ifdef DEBUG
+		cuda_check_main("start of main loop");
+		#endif
 		// construct stress-energy tensor
 		nvtxRangePushA("Construct T00");
 		//projection_init(&source);
 		thrust::fill_n(thrust::device, source.data(), lat.sitesLocalGross(), Real(0));
+#ifdef DEBUG
+		cuda_check_main("zero T00 source");
+#endif
 #ifdef HAVE_CLASS
 		if (sim.radiation_flag > 0 || sim.fluid_flag > 0)
 			projection_T00_project(class_background, class_perturbs, source, scalarFT, &plan_source, sim, ic, cosmo, fourpiG, a, 1., zetaFT);
 #endif
 		if (sim.gr_flag > 0)
 		{
-			projection_T00_project(&pcls_cdm, &source, a, &phi);
+			projection_T00_project(PCLS_CDM_PTR, &source, a, &phi);
 			if (sim.baryon_flag)
-				projection_T00_project(&pcls_b, &source, a, &phi);
+				projection_T00_project(PCLS_B_PTR, &source, a, &phi);
 			
 			tmp = 0;
 			for (int i = 0; i < cosmo.num_ncdm; i++)
@@ -586,9 +756,9 @@ int main(int argc, char **argv)
 		}
 		else
 		{
-			scalarProjectionCIC_project(&pcls_cdm, &source);
+			scalarProjectionCIC_project(PCLS_CDM_PTR, &source);
 			if (sim.baryon_flag)
-				scalarProjectionCIC_project(&pcls_b, &source);
+				scalarProjectionCIC_project(PCLS_B_PTR, &source);
 			for (int i = 0; i < cosmo.num_ncdm; i++)
 			{
 				if (a >= 1. / (sim.z_switch_deltancdm[i] + 1.) && sim.numpcl[1+sim.baryon_flag+i] > 0)
@@ -603,7 +773,7 @@ int main(int argc, char **argv)
 		{
 			//projection_init(&Bi);
 			thrust::fill_n(thrust::device, Bi.data(), 3*lat.sitesLocalGross(), Real(0));
-            projection_Ti0_project(&pcls_cdm, &Bi, &phi, &chi);
+			projection_Ti0_project(PCLS_CDM_PTR, &Bi, &phi, &chi);
             vertexProjectionCIC_comm(&Bi);
             compute_vi_rescaled(cosmo, &vi, &source, &Bi, a, a_old);
             a_old = a;
@@ -616,15 +786,15 @@ int main(int argc, char **argv)
 		nvtxRangePop();
 
 /*#ifdef ANISOTROPIC_EXPANSION
-		projection_Tij_project(&pcls_cdm, &Sij, a, &phi, 1., hij_hom);
+		projection_Tij_project(PCLS_CDM_PTR, &Sij, a, &phi, 1., hij_hom);
 #else
-		projection_Tij_project(&pcls_cdm, &Sij, a, &phi);
+		projection_Tij_project(PCLS_CDM_PTR, &Sij, a, &phi);
 #endif
 		if (sim.baryon_flag)
 #ifdef ANISOTROPIC_EXPANSION
-			projection_Tij_project(&pcls_b, &Sij, a, &phi, 1., hij_hom);
+			projection_Tij_project(PCLS_B_PTR, &Sij, a, &phi, 1., hij_hom);
 #else
-			projection_Tij_project(&pcls_b, &Sij, a, &phi);
+			projection_Tij_project(PCLS_B_PTR, &Sij, a, &phi);
 #endif*/
 
 		if (a >= 1. / (sim.z_switch_linearchi + 1.))
@@ -649,7 +819,7 @@ int main(int argc, char **argv)
 		projection_time += MPI_Wtime() - cycle_start_time;
 		ref_time = MPI_Wtime();
 #endif
-		
+		COUT << "DEBUG: before prepareFTsource phi" << endl;
 		nvtxRangePushA("Solve phi");
 		if (sim.gr_flag > 0)
 		{
@@ -666,6 +836,7 @@ int main(int argc, char **argv)
 				COUT << " cycle " << cycle << ", background information: z = " << (1./a) - 1. << ", average T00 = " << T00hom << ", background model = " << cosmo.Omega_cdm + cosmo.Omega_b + bg_ncdm(a, cosmo) << endl;
 			}
 		}
+		COUT << "DEBUG: after prepareFTsource phi" << endl;
 
 		if (sim.gr_flag == 0 || dtau_old > 0.)
 		{
@@ -680,17 +851,19 @@ int main(int argc, char **argv)
 			fft_count++;
 #endif
 		}
+		COUT << "DEBUG: after FFT forward source" << endl;
 
 		if (sim.gr_flag > 0 || sim.vector_flag == VECTOR_PARABOLIC)
 		{
 			nvtxRangePushA("offload Tij projection to GPU");
 			f_params[0] = a;
 			f_params[1] = 1.;
-			projection_Tij_project_Async(&pcls_cdm, project_Tij_fields, 2, f_params);
+			projection_Tij_project_Async(PCLS_CDM_PTR, project_Tij_fields, 2, f_params);
 			if (sim.baryon_flag)
-				projection_Tij_project_Async(&pcls_b, project_Tij_fields, 2, f_params);
+				projection_Tij_project_Async(PCLS_B_PTR, project_Tij_fields, 2, f_params);
 			nvtxRangePop();
 		}
+		COUT << "DEBUG: after Tij projection" << endl;
 		
 		nvtxRangePushA("solveModifiedPoissonFT");
 		if (sim.gr_flag == 0)
@@ -787,9 +960,9 @@ int main(int argc, char **argv)
 				//projection_T0i_comm(&Bi);
 				nvtxRangePushA("offload T0i projection to GPU");
 				f_params[0] = 1.;
-				projection_T0i_project_Async(&pcls_cdm, project_T0i_fields, 2, f_params);
+				projection_T0i_project_Async(PCLS_CDM_PTR, project_T0i_fields, 2, f_params);
 				if (sim.baryon_flag)
-					projection_T0i_project_Async(&pcls_b, project_T0i_fields, 2, f_params);
+					projection_T0i_project_Async(PCLS_B_PTR, project_T0i_fields, 2, f_params);
 				nvtxRangePop();
 			}
 
@@ -969,7 +1142,7 @@ int main(int argc, char **argv)
 		// lightcone output
 		nvtxRangePushA("Lightcone output");
 		if (sim.num_lightcone > 0)
-			writeLightcones(sim, cosmo, fourpiG, a, tau, dtau, dtau_old, maxvel[0], cycle, h5filename + sim.basename_lightcone, &pcls_cdm, &pcls_b, pcls_ncdm, &phi, &chi, &Bi, &Sij, &BiFT, &SijFT, &plan_Bi, &plan_Sij, done_hij, IDbacklog);
+			writeLightcones(sim, cosmo, fourpiG, a, tau, dtau, dtau_old, maxvel[0], cycle, h5filename + sim.basename_lightcone, PCLS_CDM_PTR, PCLS_B_PTR, pcls_ncdm, &phi, &chi, &Bi, &Sij, &BiFT, &SijFT, &plan_Bi, &plan_Sij, done_hij, IDbacklog);
 		else done_hij = 0;
 		nvtxRangePop();
 
@@ -984,7 +1157,7 @@ int main(int argc, char **argv)
 			nvtxRangePushA("Snapshot output");
 			COUT << COLORTEXT_CYAN << " writing snapshot" << COLORTEXT_RESET << " at z = " << ((1./a) - 1.) <<  " (cycle " << cycle << "), tau/boxsize = " << tau << endl;
 
-			writeSnapshots(sim, cosmo, fourpiG, a, dtau_old, done_hij, snapcount, h5filename + sim.basename_snapshot, &pcls_cdm, &pcls_b, pcls_ncdm, &phi, &chi, &Bi, &source, &Sij, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij
+			writeSnapshots(sim, cosmo, fourpiG, a, dtau_old, done_hij, snapcount, h5filename + sim.basename_snapshot, PCLS_CDM_PTR, PCLS_B_PTR, pcls_ncdm, &phi, &chi, &Bi, &source, &Sij, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij
 #ifdef CHECK_B
 				, &Bi_check, &BiFT_check, &plan_Bi_check
 #endif
@@ -996,6 +1169,7 @@ int main(int argc, char **argv)
 			snapcount++;
 			nvtxRangePop();
 		}
+		COUT << "DEBUG: after snapshot output" << endl;
 		
 #ifdef BENCHMARK
 		snapshot_output_time += MPI_Wtime() - ref_time;
@@ -1012,7 +1186,7 @@ int main(int argc, char **argv)
 #ifdef HAVE_CLASS
 				class_background, class_perturbs, ic,
 #endif
-				&pcls_cdm, &pcls_b, pcls_ncdm, &phi, &chi, &Bi, &source, &Sij, zetaFT, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij
+				PCLS_CDM_PTR, PCLS_B_PTR, pcls_ncdm, &phi, &chi, &Bi, &source, &Sij, zetaFT, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij
 #ifdef CHECK_B
 				, &Bi_check, &BiFT_check, &plan_Bi_check
 #endif
@@ -1040,7 +1214,7 @@ int main(int argc, char **argv)
 #ifdef HAVE_CLASS
 				class_background, class_perturbs, ic,
 #endif
-				&pcls_cdm, &pcls_b, pcls_ncdm, &phi, &chi, &Bi, &source, &Sij, zetaFT, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij
+				PCLS_CDM_PTR, PCLS_B_PTR, pcls_ncdm, &phi, &chi, &Bi, &source, &Sij, zetaFT, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij
 #ifdef CHECK_B
 				, &Bi_check, &BiFT_check, &plan_Bi_check
 #endif
@@ -1077,6 +1251,7 @@ int main(int argc, char **argv)
 				numsteps_ncdm[i] = (int) ceil(dtau * maxvel[i+1+sim.baryon_flag] / dx / sim.movelimit);
 			else numsteps_ncdm[i] = 1;
 		}
+		COUT << " before numsteps calculation " << endl;
 		
 		if (cycle % CYCLE_INFO_INTERVAL == 0)
 		{
@@ -1103,6 +1278,7 @@ int main(int argc, char **argv)
 			
 			COUT << endl;
 		}
+		COUT << "Starting time steps" << endl;
 
 		nvtxRangePushA("Particle update: ncdm species");
 #ifdef BENCHMARK
@@ -1118,10 +1294,16 @@ int main(int argc, char **argv)
 			{
 				f_params[0] = tmp;
 				f_params[1] = tmp * tmp * sim.numpts;
+				COUT << " check before ncdm kick " << endl;
 				if (sim.gr_flag > 0)
 					maxvel[i+1+sim.baryon_flag] = pcls_ncdm[i].updateVel(update_q, (dtau + dtau_old) / 2. / numsteps_ncdm[i], update_ncdm_fields, (1. / a < ic.z_relax + 1. ? 3 : 2), f_params);
 				else
 					maxvel[i+1+sim.baryon_flag] = pcls_ncdm[i].updateVel(update_q_Newton, (dtau + dtau_old) / 2. / numsteps_ncdm[i], update_ncdm_fields, ((sim.radiation_flag + sim.fluid_flag > 0 && a < 1. / (sim.z_switch_linearchi + 1.)) ? 2 : 1), f_params);
+				COUT << " done check before ncdm kick " << endl;
+#ifdef DEBUG
+				cuda_check_main("ncdm updateVel");
+#endif
+				COUT << " after ncdm updateVel " << endl;
 
 #ifdef BENCHMARK
 				update_q_count++;
@@ -1132,11 +1314,15 @@ int main(int argc, char **argv)
 				rungekutta4bg(tmp, fourpiG, cosmo, 0.5 * dtau / numsteps_ncdm[i]);
 				f_params[0] = tmp;
 				f_params[1] = tmp * tmp * sim.numpts;
-				
+				COUT << " check before ncdm drift " << endl;
 				if (sim.gr_flag > 0)
 					pcls_ncdm[i].moveParticles(update_pos, dtau / numsteps_ncdm[i], update_ncdm_fields, (1. / a < ic.z_relax + 1. ? 3 : 2), f_params);
 				else
 					pcls_ncdm[i].moveParticles(update_pos_Newton, dtau / numsteps_ncdm[i], NULL, 0, f_params);
+				COUT << " done check before ncdm drift " << endl;
+#ifdef DEBUG
+				cuda_check_main("ncdm moveParticles");
+#endif
 #ifdef BENCHMARK
 				moveParts_count++;
 				moveParts_time += MPI_Wtime() - ref2_time;
@@ -1151,18 +1337,23 @@ int main(int argc, char **argv)
 		nvtxRangePushA("Particle update: cdm and baryons, kick step");
 		f_params[0] = a;
 		f_params[1] = a * a * sim.numpts;
+		COUT << " check before cdm/baryon kick " << endl;
 		if (sim.gr_flag > 0)
 		{
-			maxvel[0] = pcls_cdm.updateVel(update_q_functor(), (dtau + dtau_old) / 2., update_cdm_fields, (1. / a < ic.z_relax + 1. ? 3 : 2), f_params);
+			maxvel[0] = PCLS_CDM_OBJ.updateVel(update_q_functor(), (dtau + dtau_old) / 2., update_cdm_fields, (1. / a < ic.z_relax + 1. ? 3 : 2), f_params);
 			if (sim.baryon_flag)
-				maxvel[1] = pcls_b.updateVel(update_q_functor(), (dtau + dtau_old) / 2., update_b_fields, (1. / a < ic.z_relax + 1. ? 3 : 2), f_params);
+				maxvel[1] = PCLS_B_OBJ.updateVel(update_q_functor(), (dtau + dtau_old) / 2., update_b_fields, (1. / a < ic.z_relax + 1. ? 3 : 2), f_params);
 		}
 		else
 		{
-			maxvel[0] = pcls_cdm.updateVel(update_q_Newton_functor(), (dtau + dtau_old) / 2., update_cdm_fields, ((sim.radiation_flag + sim.fluid_flag > 0 && a < 1. / (sim.z_switch_linearchi + 1.)) ? 2 : 1), f_params);
+			maxvel[0] = PCLS_CDM_OBJ.updateVel(update_q_Newton_functor(), (dtau + dtau_old) / 2., update_cdm_fields, ((sim.radiation_flag + sim.fluid_flag > 0 && a < 1. / (sim.z_switch_linearchi + 1.)) ? 2 : 1), f_params);
 			if (sim.baryon_flag)
-				maxvel[1] = pcls_b.updateVel(update_q_Newton_functor(), (dtau + dtau_old) / 2., update_b_fields, ((sim.radiation_flag + sim.fluid_flag > 0 && a < 1. / (sim.z_switch_linearchi + 1.)) ? 2 : 1), f_params);
+				maxvel[1] = PCLS_B_OBJ.updateVel(update_q_Newton_functor(), (dtau + dtau_old) / 2., update_b_fields, ((sim.radiation_flag + sim.fluid_flag > 0 && a < 1. / (sim.z_switch_linearchi + 1.)) ? 2 : 1), f_params);
 		}
+		COUT << " done check before cdm/baryon kick " << endl;
+#ifdef DEBUG
+		cuda_check_main("cdm/baryon updateVel");
+#endif
 		nvtxRangePop();
 
 #ifdef BENCHMARK
@@ -1176,18 +1367,23 @@ int main(int argc, char **argv)
 		nvtxRangePushA("Particle update: cdm and baryons, drift step");
 		f_params[0] = a;
 		f_params[1] = a * a * sim.numpts;
+		COUT << " check before cdm/baryon drift " << endl;
 		if (sim.gr_flag > 0)
 		{
-			pcls_cdm.moveParticles(update_pos_functor(), dtau, update_cdm_fields, (1. / a < ic.z_relax + 1. ? 3 : 0), f_params);
+			PCLS_CDM_OBJ.moveParticles(update_pos_functor(), dtau, update_cdm_fields, (1. / a < ic.z_relax + 1. ? 3 : 0), f_params);
 			if (sim.baryon_flag)
-				pcls_b.moveParticles(update_pos_functor(), dtau, update_b_fields, (1. / a < ic.z_relax + 1. ? 3 : 0), f_params);
+				PCLS_B_OBJ.moveParticles(update_pos_functor(), dtau, update_b_fields, (1. / a < ic.z_relax + 1. ? 3 : 0), f_params);
 		}
 		else
 		{
-			pcls_cdm.moveParticles(update_pos_Newton_functor(), dtau, NULL, 0, f_params);
+			PCLS_CDM_OBJ.moveParticles(update_pos_Newton_functor(), dtau, NULL, 0, f_params);
 			if (sim.baryon_flag)
-				pcls_b.moveParticles(update_pos_Newton_functor(), dtau, NULL, 0, f_params);
+				PCLS_B_OBJ.moveParticles(update_pos_Newton_functor(), dtau, NULL, 0, f_params);
 		}
+		COUT << " done check before cdm/baryon drift " << endl;
+#ifdef DEBUG
+		cuda_check_main("cdm/baryon moveParticles");
+#endif
 		nvtxRangePop();
 
 #ifdef BENCHMARK
@@ -1322,6 +1518,10 @@ delete [] IDbacklog;
 #endif
 
 	if (cosmo.num_ncdm > 0) delete[] pcls_ncdm;
+
+#ifdef NOTGH
+	if (f_params != nullptr) cudaFree(f_params);
+#endif
 
 	parallel.finalize();
 

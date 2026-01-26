@@ -15,6 +15,10 @@
 
 #include "lattice_loop.hpp"
 
+#if defined(DEBUG) || defined(NOTGH)
+#include <cuda_runtime.h>
+#endif
+
 #ifndef Cplx
 #define Cplx Imag
 #endif
@@ -429,21 +433,104 @@ void computeVectorDiagnostics(Field<Real> & Bi, Real & mdivB, Real & mcurlB)
 	//Real b1, b2, b3, b4;
 	const Real linesize = (Real) Bi.lattice().sizeLocal(0);
 	//Site x(Bi.lattice());
+	const int halo = Bi.lattice().halo();
+	if (halo < 1)
+	{
+		mdivB = 0.;
+		mcurlB = 0.;
+		parallel.max<Real>(mdivB);
+		parallel.max<Real>(mcurlB);
+		return;
+	}
+
+#ifdef NOTGH
+	//check if source of error is reduction call
+	Site x(Bi.lattice());
+	Real b1, b2, b3, b4;
+	mdivB = 0.;
+	mcurlB = 0.;
+	for (x.first(); x.test(); x.next())
+	{
+		b1 = fabs((Bi(x,0)-Bi(x-0,0)) + (Bi(x,1)-Bi(x-1,1)) + (Bi(x,2)-Bi(x-2,2))) * linesize;
+		if (b1 > mdivB) mdivB = b1;
+		b1 = 0.5 * (Bi(x,0) + Bi(x+0,1) - Bi(x+1,0) - Bi(x,1) + Bi(x+2,0) + Bi(x+0+2,1) - Bi(x+1+2,0) - Bi(x+2,1)) * linesize;
+		b2 = 0.5 * (Bi(x,0) + Bi(x+0,2) - Bi(x+2,0) - Bi(x,2) + Bi(x+1,0) + Bi(x+0+1,2) - Bi(x+2+1,0) - Bi(x+1,2)) * linesize;
+		b3 = 0.5 * (Bi(x,2) + Bi(x+2,1) - Bi(x+1,2) - Bi(x,1) + Bi(x+0,2) + Bi(x+2+0,1) - Bi(x+1+0,2) - Bi(x+0,1)) * linesize;
+		b4 = sqrt(b1 * b1 + b2 * b2 + b3 * b3);
+		if (b4 > mcurlB) mcurlB = b4;
+	}
+	parallel.max<Real>(mdivB);
+	parallel.max<Real>(mcurlB);
+	return;
+#endif
 	
 	//mdivB = 0.;
 	//mcurlB = 0.;
 
 	Field<Real> * fieldptr = &Bi;
+	Field<Real> ** d_fields = nullptr;
 	double result[2] = { 0., 0. };
 	int reduce[2] = { MAX, MAX };
+	double * d_result = nullptr;
+	int * d_reduce = nullptr;
 
 	int numpts = Bi.lattice().sizeLocal(0);
 	int block_x = Bi.lattice().sizeLocal(1);
 	int block_y = Bi.lattice().sizeLocal(2);
 
-	lattice_for_each<computeVectorDiagnostics_functor, 2><<<dim3(block_x, block_y), 128>>>(computeVectorDiagnostics_functor(), numpts, &fieldptr, 1, nullptr, result, reduce);
+	#ifdef NOTGH
+	if (cudaMallocManaged(&d_fields, sizeof(Field<Real>*)) != cudaSuccess)
+	{
+		throw std::runtime_error("CUDA malloc failed for fields in computeVectorDiagnostics");
+	}
+	if (cudaMallocManaged(&d_result, 2 * sizeof(double)) != cudaSuccess)
+	{
+		cudaFree(d_fields);
+		throw std::runtime_error("CUDA malloc failed for result in computeVectorDiagnostics");
+	}
+	if (cudaMallocManaged(&d_reduce, 2 * sizeof(int)) != cudaSuccess)
+	{
+		cudaFree(d_fields);
+		cudaFree(d_result);
+		throw std::runtime_error("CUDA malloc failed for reduce in computeVectorDiagnostics");
+	}
+	d_fields[0] = &Bi;
+	d_result[0] = 0.0;
+	d_result[1] = 0.0;
+	d_reduce[0] = MAX;
+	d_reduce[1] = MAX;
+	#else
+	cudaMalloc(&d_result, 2 * sizeof(double));
+	cudaMalloc(&d_reduce, 2 * sizeof(int));
+	cudaMemcpy(d_result, result, 2 * sizeof(double), cudaMemcpyDefault);
+	cudaMemcpy(d_reduce, reduce, 2 * sizeof(int), cudaMemcpyDefault);
+	d_fields = &fieldptr;
+	#endif
 
-	cudaDeviceSynchronize();
+	lattice_for_each<computeVectorDiagnostics_functor, 2><<<dim3(block_x, block_y), 128>>>(computeVectorDiagnostics_functor(), numpts, d_fields, 1, nullptr, d_result, d_reduce);
+
+	auto success = cudaDeviceSynchronize();
+	if (success != cudaSuccess)
+	{
+		throw std::runtime_error(std::string("CUDA sync error in computeVectorDiagnostics: ") + cudaGetErrorString(success));
+	}
+	auto kernel_err = cudaGetLastError();
+	if (kernel_err != cudaSuccess)
+	{
+		throw std::runtime_error(std::string("CUDA kernel error in computeVectorDiagnostics: ") + cudaGetErrorString(kernel_err));
+	}
+
+	#ifdef NOTGH
+	result[0] = d_result[0];
+	result[1] = d_result[1];
+	cudaFree(d_fields);
+	cudaFree(d_result);
+	cudaFree(d_reduce);
+	#else
+	cudaMemcpy(result, d_result, 2 * sizeof(double), cudaMemcpyDeviceToHost);
+	cudaFree(d_result);
+	cudaFree(d_reduce);
+	#endif
 
 	parallel.max<double>(result, 2);
 
@@ -513,14 +600,61 @@ void computeTensorDiagnostics(Field<Real> & hij, Real & mdivh, Real & mtraceh, R
 	Field<Real> * fieldptr = &hij;
 	double result[3] = { 0., 0., 0. };
 	int reduce[3] = { MAX, MAX, MAX };
+	Field<Real> ** d_fields = nullptr;
+	double * d_result = nullptr;
+	int * d_reduce = nullptr;
 
 	int numpts = hij.lattice().sizeLocal(0);
 	int block_x = hij.lattice().sizeLocal(1);
 	int block_y = hij.lattice().sizeLocal(2);
 
-	lattice_for_each<computeTensorDiagnostics_functor, 3><<<dim3(block_x, block_y), 128>>>(computeTensorDiagnostics_functor(), numpts, &fieldptr, 1, nullptr, result, reduce);
+	#ifdef NOTGH
+	if (cudaMallocManaged(&d_fields, sizeof(Field<Real>*)) != cudaSuccess)
+	{
+		throw std::runtime_error("CUDA malloc failed for fields in computeTensorDiagnostics");
+	}
+	if (cudaMallocManaged(&d_result, 3 * sizeof(double)) != cudaSuccess)
+	{
+		cudaFree(d_fields);
+		throw std::runtime_error("CUDA malloc failed for result in computeTensorDiagnostics");
+	}
+	if (cudaMallocManaged(&d_reduce, 3 * sizeof(int)) != cudaSuccess)
+	{
+		cudaFree(d_fields);
+		cudaFree(d_result);
+		throw std::runtime_error("CUDA malloc failed for reduce in computeTensorDiagnostics");
+	}
+	d_fields[0] = &hij;
+	d_result[0] = 0.0;
+	d_result[1] = 0.0;
+	d_result[2] = 0.0;
+	d_reduce[0] = MAX;
+	d_reduce[1] = MAX;
+	d_reduce[2] = MAX;
+	#else
+	cudaMalloc(&d_result, 3 * sizeof(double));
+	cudaMalloc(&d_reduce, 3 * sizeof(int));
+	cudaMemcpy(d_result, result, 3 * sizeof(double), cudaMemcpyDefault);
+	cudaMemcpy(d_reduce, reduce, 3 * sizeof(int), cudaMemcpyDefault);
+	d_fields = &fieldptr;
+	#endif
+
+	lattice_for_each<computeTensorDiagnostics_functor, 3><<<dim3(block_x, block_y), 128>>>(computeTensorDiagnostics_functor(), numpts, d_fields, 1, nullptr, d_result, d_reduce);
 
 	cudaDeviceSynchronize();
+
+	#ifdef NOTGH
+	result[0] = d_result[0];
+	result[1] = d_result[1];
+	result[2] = d_result[2];
+	cudaFree(d_fields);
+	cudaFree(d_result);
+	cudaFree(d_reduce);
+	#else
+	cudaMemcpy(result, d_result, 3 * sizeof(double), cudaMemcpyDeviceToHost);
+	cudaFree(d_result);
+	cudaFree(d_reduce);
+	#endif
 
 	parallel.max<double>(result, 3);
 

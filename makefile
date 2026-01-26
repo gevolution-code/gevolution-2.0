@@ -15,7 +15,7 @@ HEADERS      := $(wildcard *.hpp)
 DLATFIELD2   := -DFFT3D -DHDF5
 
 # optional compiler settings (LATfield2)
-DLATFIELD2   += -DH5_HAVE_PARALLEL
+#DLATFIELD2   += -DH5_HAVE_PARALLEL
 #DLATFIELD2   += -DEXTERNAL_IO # enables I/O server (use with care)
 DLATFIELD2   += -DSINGLE      # switches to single precision, use LIB -lfftw3f
 
@@ -30,7 +30,7 @@ DGEVOLUTION  += -DHAVE_CLASS    # requires LIB -lclass
 #DGEVOLUTION  += -DHAVE_HEALPIX  # requires LIB -lchealpix
 DGEVOLUTION  += -DGRADIENT_ORDER=2
 DGEVOLUTION  += -DLATFIELD2_DEBUG_CUDA_SYNC
-DGEVOLUTION  += -DNOTGH
+DGEVOLUTION  += -DNOTGH -DDEBUG
 #DGEVOLUTION  += -DPCL_EXTRA_CAPACITY=8388608
 #DGEVOLUTION  += -DDEBUG_ALIGNMENT
 

@@ -19,6 +19,9 @@
 #include "tools.hpp"
 #include <thrust/device_vector.h>
 #include <nvtx3/nvToolsExt.h>
+#if defined(DEBUG) || defined(NOTGH)
+#include <cuda_runtime.h>
+#endif
 
 #ifndef Cplx
 #define Cplx Imag
@@ -2198,6 +2201,7 @@ parameter * params, int & numparam)
 	
 	nvtxRangePushA("initialize CDM particles: positions");
 	initializeParticlePositions(sim.numpcl[0], pcldata, ic.numtile[0], *pcls_cdm);
+	ic_checkpoint("before update row buffers", __LINE__);
 	pcls_cdm->updateRowBuffers();
 	nvtxRangePop();
 	ic_checkpoint("after CDM positions", __LINE__);
@@ -2455,24 +2459,94 @@ parameter * params, int & numparam)
 			COUT << " species " << p+1 << " Fermi-Dirac distribution had mean q/m = " << mean_q / sim.numpcl[1+sim.baryon_flag+p] << endl;
 		}
 #ifdef ANISOTROPIC_EXPANSION
+#ifdef NOTGH
+		double * f_params_dev = nullptr;
+		if (cudaMallocManaged(&f_params_dev, 7 * sizeof(double)) != cudaSuccess)
+		{
+			COUT << " error: cudaMallocManaged failed for f_params in generateIC_basic" << endl;
+			parallel.abortForce();
+		}
+		f_params_dev[0] = a;
+		for (int i = 1; i < 7; i++) f_params_dev[i] = 0.;
+		maxvel[1+sim.baryon_flag+p] = pcls_ncdm[p].updateVel(update_q, 0., &phi, 1, f_params_dev);
+		cudaFree(f_params_dev);
+#else
 		double f_params[7] = {a, 0., 0., 0., 0., 0., 0.};
 		maxvel[1+sim.baryon_flag+p] = pcls_ncdm[p].updateVel(update_q, 0., &phi, 1, f_params);
+#endif
+#else
+#ifdef NOTGH
+		double * a_dev = nullptr;
+		if (cudaMallocManaged(&a_dev, sizeof(double)) != cudaSuccess)
+		{
+			COUT << " error: cudaMallocManaged failed for a in generateIC_basic" << endl;
+			parallel.abortForce();
+		}
+		*a_dev = a;
+		maxvel[1+sim.baryon_flag+p] = pcls_ncdm[p].updateVel(update_q, 0., &phi, 1, a_dev);
+		cudaFree(a_dev);
 #else
 		maxvel[1+sim.baryon_flag+p] = pcls_ncdm[p].updateVel(update_q, 0., &phi, 1, &a);
 #endif
+#endif
 	}
-	
+	// sync
+	cudaDeviceSynchronize();
+	#ifdef DEBUG
+	auto cuda_check = [&](const char * label) {
+		cudaError_t err = cudaGetLastError();
+		if (err != cudaSuccess)
+		{
+			COUT << " CUDA error after " << label << ": " << cudaGetErrorString(err) << endl;
+			parallel.abortForce();
+		}
+		err = cudaDeviceSynchronize();
+		if (err != cudaSuccess)
+		{
+			COUT << " CUDA sync error after " << label << ": " << cudaGetErrorString(err) << endl;
+			parallel.abortForce();
+		}
+	};
+	#endif
 	nvtxRangePushA("initialize B");
 	//projection_init(Bi);
 	thrust::fill_n(thrust::device, Bi->data(), 3*Bi->lattice().sitesLocalGross(), Real(0));
+	ic_checkpoint("Finished thrust", __LINE__);
+	#ifdef DEBUG
+	cuda_check("thrust fill Bi");
+	#endif
 	projection_T0i_project(pcls_cdm, Bi, phi);
+	#ifdef DEBUG
+	cuda_check("projection_T0i_project cdm");
+	#endif
 	if (sim.baryon_flag)
+	{
 		projection_T0i_project(pcls_b, Bi, phi);
+		#ifdef DEBUG
+		cuda_check("projection_T0i_project baryon");
+		#endif
+	}
+	ic_checkpoint("Finished projection_T0i_project", __LINE__);
 	projection_T0i_comm(Bi);
+	#ifdef DEBUG
+	cuda_check("projection_T0i_comm");
+	#endif
 	plan_Bi->execute(FFT_FORWARD);
+	#ifdef DEBUG
+	cuda_check("plan_Bi forward");
+	#endif
 	projectFTvector(*BiFT, *BiFT, fourpiG / (double) sim.numpts / (double) sim.numpts);	
+	#ifdef DEBUG
+	cuda_check("projectFTvector BiFT");
+	#endif
 	plan_Bi->execute(FFT_BACKWARD);	
+	#ifdef DEBUG
+	cuda_check("plan_Bi backward");
+	#endif
 	Bi->updateHalo();	// B initialized
+	#ifdef DEBUG
+	cuda_check("Bi updateHalo");
+	#endif
 	nvtxRangePop();
 	ic_checkpoint("after B initialization", __LINE__);
 	
@@ -2481,14 +2555,18 @@ parameter * params, int & numparam)
 	thrust::fill_n(thrust::device, Sij->data(), 6*Sij->lattice().sitesLocalGross(), Real(0));
 	projection_Tij_project(pcls_cdm, Sij, a, phi);
 	if (sim.baryon_flag)
+	{
 		projection_Tij_project(pcls_b, Sij, a, phi);
+	}
 	projection_Tij_comm(Sij);
-	
+	ic_checkpoint("after Sij comm", __LINE__);
 	prepareFTsource(*phi, *Sij, *Sij, 2. * fourpiG / a / (double) sim.numpts / (double) sim.numpts);	
 	plan_Sij->execute(FFT_FORWARD);	
 	projectFTscalar(*SijFT, *scalarFT);
+	ic_checkpoint("after Sij projection", __LINE__);
 	plan_chi->execute(FFT_BACKWARD);		
 	chi->updateHalo();	// chi now finally contains chi
+	ic_checkpoint("after chi halo", __LINE__);
 	nvtxRangePop();
 
 	gsl_spline_free(pkspline);
@@ -2500,6 +2578,7 @@ parameter * params, int & numparam)
 #ifdef HAVE_CLASS
 	gsl_interp_accel_free(acc);
 #endif
+	ic_checkpoint("Finished ic_basic", __LINE__);
 }
 
 #endif
