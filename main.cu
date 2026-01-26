@@ -38,6 +38,9 @@
 #if defined(DEBUG) || defined(NOTGH)
 #include <cuda_runtime.h>
 #endif
+#ifdef DEBUG
+#include <malloc.h>
+#endif
 #include <stdlib.h>
 #include <set>
 #include <vector>
@@ -852,6 +855,17 @@ int main(int argc, char **argv)
 #endif
 		}
 		COUT << "DEBUG: after FFT forward source" << endl;
+		#ifdef DEBUG
+		{
+			size_t dev_free = 0, dev_total = 0;
+			cudaMemGetInfo(&dev_free, &dev_total);
+			struct mallinfo2 mi = mallinfo2();
+			COUT << "[MEM] after FFT forward source host_uord=" << mi.uordblks
+			     << " host_ford=" << mi.fordblks
+			     << " dev_free=" << dev_free
+			     << " dev_total=" << dev_total << endl;
+		}
+		#endif
 
 		if (sim.gr_flag > 0 || sim.vector_flag == VECTOR_PARABOLIC)
 		{
@@ -864,6 +878,17 @@ int main(int argc, char **argv)
 			nvtxRangePop();
 		}
 		COUT << "DEBUG: after Tij projection" << endl;
+		#ifdef DEBUG
+		{
+			size_t dev_free = 0, dev_total = 0;
+			cudaMemGetInfo(&dev_free, &dev_total);
+			struct mallinfo2 mi = mallinfo2();
+			COUT << "[MEM] after Tij projection host_uord=" << mi.uordblks
+			     << " host_ford=" << mi.fordblks
+			     << " dev_free=" << dev_free
+			     << " dev_total=" << dev_total << endl;
+		}
+		#endif
 		
 		nvtxRangePushA("solveModifiedPoissonFT");
 		if (sim.gr_flag == 0)
