@@ -26,9 +26,9 @@
 // 
 // main control sequence of Geneva N-body code with evolution of metric perturbations (gevolution)
 //
-// Author: Julian Adamek (Université de Genève & Observatoire de Paris & Queen Mary University of London & Universität Zürich)
+// Author: Julian Adamek (Université de Genève & Observatoire de Paris & Queen Mary University of London & Universität Zürich & ETH Zürich)
 //
-// Last modified: January 2025
+// Last modified: February 2026
 //
 //////////////////////////
 
@@ -246,102 +246,169 @@ int main(int argc, char **argv)
 	box[0] = sim.numpts;
 	box[1] = sim.numpts;
 	box[2] = sim.numpts;
-	
-	Lattice lat(3,box,GRADIENT_ORDER);
-	Lattice latFT;
-	latFT.initializeRealFFT(lat,0);
-	
-	perfParticles_gevolution<part_simple,part_simple_info> pcls_cdm;
-	perfParticles_gevolution<part_simple,part_simple_info> pcls_b;
-	Particles_gevolution<part_simple,part_simple_info,part_simple_dataType> * pcls_ncdm = nullptr;
-	if (cosmo.num_ncdm > 0) pcls_ncdm = new Particles_gevolution<part_simple,part_simple_info,part_simple_dataType>[cosmo.num_ncdm];
 
-	Field<Real> * update_cdm_fields[3];
-	Field<Real> * update_b_fields[3];
-	Field<Real> * update_ncdm_fields[3];
-	Field<Real> * project_Tij_fields[2];
-	Field<Real> * project_T0i_fields[2];
+	Lattice * lat;
+	Lattice * latFT;
+
+	cudaMallocManaged(&lat, sizeof(Lattice));
+	cudaMallocManaged(&latFT, sizeof(Lattice));
+
+	new (lat) Lattice(3,box,GRADIENT_ORDER);
+	new (latFT) Lattice();
+	latFT->initializeRealFFT(*lat,0);
+	
+	perfParticles_gevolution<part_simple,part_simple_info> * pcls_cdm;
+	perfParticles_gevolution<part_simple,part_simple_info> * pcls_b;
+	Particles_gevolution<part_simple,part_simple_info,part_simple_dataType> * pcls_ncdm = nullptr;
+
+	cudaMallocManaged(&pcls_cdm, sizeof(perfParticles_gevolution<part_simple,part_simple_info>));
+	cudaMallocManaged(&pcls_b, sizeof(perfParticles_gevolution<part_simple,part_simple_info>));
+
+	new (pcls_cdm) perfParticles_gevolution<part_simple,part_simple_info>();
+	new (pcls_b) perfParticles_gevolution<part_simple,part_simple_info>();
+
+	if (cosmo.num_ncdm > 0) 
+	{
+		cudaMallocManaged(&pcls_ncdm, cosmo.num_ncdm * sizeof(Particles_gevolution<part_simple,part_simple_info,part_simple_dataType>));
+
+		for (int i = 0; i < cosmo.num_ncdm; i++)
+			 new (pcls_ncdm + i) Particles_gevolution<part_simple,part_simple_info,part_simple_dataType>();
+	}
+
+	Field<Real> ** update_cdm_fields;
+	Field<Real> ** update_b_fields;
+	Field<Real> ** update_ncdm_fields;
+	Field<Real> ** project_Tij_fields;
+	Field<Real> ** project_T0i_fields;
+	Field<Real> ** prepareFTsource_T00_fields;
+	Field<Real> ** prepareFTsource_Tij_fields;
+	Field<Real> ** sourceptr;
+	Field<Real> * host_fields[4];
 	double f_params[7] = {0., 0., 0., 0., 0., 0., 0.};
+	double * d_params;
 	set<long> ** IDbacklog;
 
 	IDbacklog = new set<long> * [sim.num_IDlogs];
 	for (int i = 0; i < sim.num_IDlogs; i++)
 		IDbacklog[i] = new set<long> [MAX_PCL_SPECIES];
 
-	Field<Real> phi;
-	Field<Real> source;
-	Field<Real> chi;
-	Field<Real> Sij;
-	Field<Real> Bi;
+	Field<Real> * phi;
+	Field<Real> * source;
+	Field<Real> * chi;
+	Field<Real> * Sij;
+	Field<Real> * Bi;
+
+	cudaMallocManaged(&phi, sizeof(Field<Real>));
+	cudaMallocManaged(&source, sizeof(Field<Real>));
+	cudaMallocManaged(&chi, sizeof(Field<Real>));
+	cudaMallocManaged(&Sij, sizeof(Field<Real>));
+	cudaMallocManaged(&Bi, sizeof(Field<Real>));
+
+	new (phi) Field<Real>();
+	new (source) Field<Real>();
+	new (chi) Field<Real>();
+	new (Sij) Field<Real>();
+	new (Bi) Field<Real>();
+
 	Field<Cplx> scalarFT;
 	Field<Cplx> SijFT;
 	Field<Cplx> BiFT;
 	Field<Cplx> * zetaFT = NULL;
-	source.initialize(lat,1);
-	phi.initialize(lat,1);
-	chi.initialize(lat,1);
-	scalarFT.initialize(latFT,1);
-	PlanFFT<Cplx> plan_source(&source, &scalarFT);
-	PlanFFT<Cplx> plan_phi(&phi, &scalarFT);
-	PlanFFT<Cplx> plan_chi(&chi, &scalarFT);
-	Sij.initialize(lat,3,3,symmetric);
-	SijFT.initialize(latFT,3,3,symmetric);
-	PlanFFT<Cplx> plan_Sij(&Sij, &SijFT);
-	Bi.initialize(lat,3);
-	BiFT.initialize(latFT,3);
-	PlanFFT<Cplx> plan_Bi(&Bi, &BiFT);
+	source->initialize(*lat,1);
+	phi->initialize(*lat,1);
+	chi->initialize(*lat,1);
+	scalarFT.initialize(*latFT,1);
+	PlanFFT<Cplx> plan_source(source, &scalarFT);
+	PlanFFT<Cplx> plan_phi(phi, &scalarFT);
+	PlanFFT<Cplx> plan_chi(chi, &scalarFT);
+	Sij->initialize(*lat,3,3,symmetric);
+	SijFT.initialize(*latFT,3,3,symmetric);
+	PlanFFT<Cplx> plan_Sij(Sij, &SijFT);
+	Bi->initialize(*lat,3);
+	BiFT.initialize(*latFT,3);
+	PlanFFT<Cplx> plan_Bi(Bi, &BiFT);
 #ifdef CHECK_B
-	Field<Real> Bi_check;
+	Field<Real> * Bi_check;
 	Field<Cplx> BiFT_check;
-	Bi_check.initialize(lat,3);
-	BiFT_check.initialize(latFT,3);
-	PlanFFT<Cplx> plan_Bi_check(&Bi_check, &BiFT_check);
+	cudaMallocManaged(&Bi_check, sizeof(Field<Real>));
+	new (Bi_check) Field<Real>();
+	Bi_check->initialize(*lat,3);
+	BiFT_check.initialize(*latFT,3);
+	PlanFFT<Cplx> plan_Bi_check(Bi_check, &BiFT_check);
 #endif
 #ifdef VELOCITY
-	Field<Real> vi;
+	Field<Real> * vi;
+	cudaMallocManaged(&vi, sizeof(Field<Real>));
+	new (vi) Field<Real>();
+	vi->initialize(*lat,3);
 	Field<Cplx> viFT;
-	vi.initialize(lat,3);
-	viFT.initialize(latFT,3);
-	PlanFFT<Cplx> plan_vi(&vi, &viFT);
+	viFT.initialize(*latFT,3);
+	PlanFFT<Cplx> plan_vi(vi, &viFT);
 	double a_old;
 #endif
 #ifdef TENSOR_EVOLUTION
 	Field<Cplx> hijFT;
 	Field<Cplx> hijprimeFT;
-	hijFT.initialize(latFT,3,3,symmetric);
-	hijprimeFT.initialize(latFT,3,3,symmetric);
-	PlanFFT<Cplx> plan_hij(&Sij, &hijFT);
+	hijFT.initialize(*latFT,3,3,symmetric);
+	hijprimeFT.initialize(*latFT,3,3,symmetric);
+	PlanFFT<Cplx> plan_hij(Sij, &hijFT);
 	hijprimeFT.alloc();
 #endif
 
-	update_cdm_fields[0] = &phi;
-	update_cdm_fields[1] = &chi;
-	update_cdm_fields[2] = &Bi;
-	
-	update_b_fields[0] = &phi;
-	update_b_fields[1] = &chi;
-	update_b_fields[2] = &Bi;
-	
-	update_ncdm_fields[0] = &phi;
-	update_ncdm_fields[1] = &chi;
-	update_ncdm_fields[2] = &Bi;
+	cudaMalloc(&d_params, 7 * sizeof(double));
 
-	project_Tij_fields[0] = &Sij;
-	project_Tij_fields[1] = &phi;
+	cudaMalloc(&update_cdm_fields, 3 * sizeof(Field<Real> *));
+	cudaMalloc(&update_b_fields, 3 * sizeof(Field<Real> *));
+	cudaMalloc(&update_ncdm_fields, 3 * sizeof(Field<Real> *));
+	cudaMalloc(&project_Tij_fields, 2 * sizeof(Field<Real> *));
+	cudaMalloc(&project_T0i_fields, 2 * sizeof(Field<Real> *));
+	cudaMalloc(&prepareFTsource_T00_fields, 4 * sizeof(Field<Real> *));
+	cudaMalloc(&prepareFTsource_Tij_fields, 3 * sizeof(Field<Real> *));
+	cudaMalloc(&sourceptr, sizeof(Field<Real> *));
 
-	project_T0i_fields[0] = &Bi;
-	project_T0i_fields[1] = &phi;
+	host_fields[0] = phi;
+	host_fields[1] = chi;
+	host_fields[2] = Bi;
+
+	cudaMemcpy(update_cdm_fields, host_fields, 3 * sizeof(Field<Real> *), cudaMemcpyDefault);
+	cudaMemcpy(update_b_fields, host_fields, 3 * sizeof(Field<Real> *), cudaMemcpyDefault);
+	cudaMemcpy(update_ncdm_fields, host_fields, 3 * sizeof(Field<Real> *), cudaMemcpyDefault);
+
+	host_fields[0] = Sij;
+	host_fields[1] = phi;
+
+	cudaMemcpy(project_Tij_fields, host_fields, 2 * sizeof(Field<Real> *), cudaMemcpyDefault);
+
+	host_fields[0] = Bi;
+	host_fields[1] = phi;
+
+	cudaMemcpy(project_T0i_fields, host_fields, 2 * sizeof(Field<Real> *), cudaMemcpyDefault);
+
+	host_fields[0] = source;
+	host_fields[1] = source;
+	host_fields[2] = phi;
+	host_fields[3] = chi;
+
+	cudaMemcpy(prepareFTsource_T00_fields, host_fields, 4 * sizeof(Field<Real> *), cudaMemcpyDefault);
+
+	host_fields[0] = Sij;
+	host_fields[1] = Sij;
+	host_fields[2] = phi;
+
+	cudaMemcpy(prepareFTsource_Tij_fields, host_fields, 3 * sizeof(Field<Real> *), cudaMemcpyDefault);
+
+	cudaMemcpy(sourceptr, &source, sizeof(Field<Real> *), cudaMemcpyDefault);
 	
-	Site x(lat);
-	rKSite kFT(latFT);
+	Site x(*lat);
+	rKSite kFT(*latFT);
 	
 	dx = 1.0 / (double) sim.numpts;
 	numpts3d = (long) sim.numpts * (long) sim.numpts * (long) sim.numpts;
 	
 	for (int i = 0; i < 3; i++) // particles may never move farther than to the adjacent domain
 	{
-		if (lat.sizeLocal(i)-1 < sim.movelimit)
-			sim.movelimit = lat.sizeLocal(i)-1;
+		if (lat->sizeLocal(i)-1 < sim.movelimit)
+			sim.movelimit = lat->sizeLocal(i)-1;
 	}
 	parallel.min(sim.movelimit);
 
@@ -354,24 +421,16 @@ int main(int argc, char **argv)
 	nvtxRangePushA("IC generation");
 	
 	if (ic.generator == ICGEN_BASIC)
-		generateIC_basic(sim, ic, cosmo, fourpiG, &pcls_cdm, &pcls_b, pcls_ncdm, maxvel, &phi, &chi, &Bi, &source, &Sij, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij, 
+		generateIC_basic(sim, ic, cosmo, fourpiG, pcls_cdm, pcls_b, pcls_ncdm, maxvel, phi, chi, Bi, source, Sij, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij, 
 #ifdef HAVE_CLASS
 		class_background, class_perturbs,
 #endif		
 		params, numparam); // generates ICs on the fly
 	else if (ic.generator == ICGEN_READ_FROM_DISK)
-		readIC(sim, ic, cosmo, fourpiG, a, tau, dtau, dtau_old, &pcls_cdm, &pcls_b, pcls_ncdm, maxvel, &phi, &chi, &Bi, &source, &Sij, zetaFT, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij, cycle, snapcount, pkcount, restartcount, IDbacklog);
+		readIC(sim, ic, cosmo, fourpiG, a, tau, dtau, dtau_old, pcls_cdm, pcls_b, pcls_ncdm, maxvel, phi, chi, Bi, source, Sij, zetaFT, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij, cycle, snapcount, pkcount, restartcount, IDbacklog);
 #ifdef ICGEN_RELIC
 	else if (ic.generator == ICGEN_RELIC)
-		generateIC_relic(sim, ic, cosmo, fourpiG, &pcls_cdm, &pcls_b, pcls_ncdm, maxvel, &phi, &chi, &Bi, &source, &Sij, zetaFT, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij, params, numparam);
-#endif
-#ifdef ICGEN_PREVOLUTION
-	else if (ic.generator == ICGEN_PREVOLUTION)
-		generateIC_prevolution(sim, ic, cosmo, fourpiG, a, tau, dtau, dtau_old, &pcls_cdm, &pcls_b, pcls_ncdm, maxvel, &phi, &chi, &Bi, &source, &Sij, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij, params, numparam);
-#endif
-#ifdef ICGEN_FALCONIC
-	else if (ic.generator == ICGEN_FALCONIC)
-		maxvel[0] = generateIC_FalconIC(sim, ic, cosmo, fourpiG, dtau, &pcls_cdm, pcls_ncdm, maxvel+1, &phi, &source, &chi, &Bi, &source, &Sij, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_source, &plan_chi, &plan_Bi, &plan_source, &plan_Sij);
+		generateIC_relic(sim, ic, cosmo, fourpiG, pcls_cdm, pcls_b, pcls_ncdm, maxvel, phi, chi, Bi, source, Sij, zetaFT, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij, params, numparam);
 #endif
 	else
 	{
@@ -410,7 +469,7 @@ int main(int argc, char **argv)
 #ifdef VELOCITY
 	a_old = a;
 	//projection_init(&vi);
-	thrust::fill_n(thrust::device, vi.data(), 3*lat.sitesLocalGross(), Real(0));
+	thrust::fill_n(thrust::device, vi->data(), 3*lat->sitesLocalGross(), Real(0));
 #endif
 #ifdef TENSOR_EVOLUTION
 	/*for (kFT.first(); kFT.test(); kFT.next())
@@ -419,7 +478,7 @@ int main(int argc, char **argv)
 			hijprimeFT(kFT, i) = Cplx(0,0);
 	}*/
 	#pragma omp parallel for
-	for (long i = 0; i < hijprimeFT.components() * latFT.sitesLocalGross(); i++)
+	for (long i = 0; i < hijprimeFT.components() * latFT->sitesLocalGross(); i++)
 	{
 		hijprimeFT.data()[i] = Cplx(0,0);
 	}
@@ -509,8 +568,8 @@ int main(int argc, char **argv)
 			plan_source.execute(FFT_BACKWARD);
 			//for (x.first(); x.test(); x.next())
 			//	chi(x) += source(x);
-			thrust::transform(thrust::device, chi.data(), chi.data() + lat.sitesLocalGross(), source.data(), chi.data(), thrust::plus<Real>());
-			chi.updateHalo();
+			thrust::transform(thrust::device, chi->data(), chi->data() + lat->sitesLocalGross(), source->data(), chi->data(), thrust::plus<Real>());
+			chi->updateHalo();
 		}
 	}
 	else if (cosmo.Hspline != NULL)
@@ -545,22 +604,22 @@ int main(int argc, char **argv)
 		// construct stress-energy tensor
 		nvtxRangePushA("Construct T00");
 		//projection_init(&source);
-		thrust::fill_n(thrust::device, source.data(), lat.sitesLocalGross(), Real(0));
+		thrust::fill_n(thrust::device, source->data(), lat->sitesLocalGross(), Real(0));
 #ifdef HAVE_CLASS
 		if (sim.radiation_flag > 0 || sim.fluid_flag > 0)
 			projection_T00_project(class_background, class_perturbs, source, scalarFT, &plan_source, sim, ic, cosmo, fourpiG, a, 1., zetaFT);
 #endif
 		if (sim.gr_flag > 0)
 		{
-			projection_T00_project(&pcls_cdm, &source, a, &phi);
+			projection_T00_project(pcls_cdm, source, a, phi);
 			if (sim.baryon_flag)
-				projection_T00_project(&pcls_b, &source, a, &phi);
+				projection_T00_project(pcls_b, source, a, phi);
 			
 			tmp = 0;
 			for (int i = 0; i < cosmo.num_ncdm; i++)
 			{
 				if (a >= 1. / (sim.z_switch_deltancdm[i] + 1.) && sim.numpcl[1+sim.baryon_flag+i] > 0)
-					projection_T00_project(pcls_ncdm+i, &source, a, &phi);
+					projection_T00_project(pcls_ncdm+i, source, a, phi);
 				else if (sim.radiation_flag == 0 || (a >= 1. / (sim.z_switch_deltancdm[i] + 1.) && sim.numpcl[1+sim.baryon_flag+i] == 0))
 				{
 					//tmp = bg_ncdm(a, cosmo, i);
@@ -573,25 +632,29 @@ int main(int argc, char **argv)
 
 			if (tmp > 0)
 			{
-				Field<Real> * fieldptr = &source;
+				double * d_tmp;
+				cudaMalloc(&d_tmp, sizeof(double));
+				cudaMemcpy(d_tmp, &tmp, sizeof(double), cudaMemcpyDefault);
 
-				lattice_for_each<<<dim3(source.lattice().sizeLocal(1), source.lattice().sizeLocal(2)), 128>>>(lattice_add_functor(), sim.numpts, &fieldptr, 1, &tmp, nullptr, nullptr);
+				lattice_for_each<<<dim3(source->lattice().sizeLocal(1), source->lattice().sizeLocal(2)), 128>>>(lattice_add_functor(), sim.numpts, sourceptr, 1, d_tmp, nullptr, nullptr);
 
 				cudaDeviceSynchronize();
+
+				cudaFree(d_tmp);
 			}
 		}
 		else
 		{
-			scalarProjectionCIC_project(&pcls_cdm, &source);
+			scalarProjectionCIC_project(pcls_cdm, source);
 			if (sim.baryon_flag)
-				scalarProjectionCIC_project(&pcls_b, &source);
+				scalarProjectionCIC_project(pcls_b, source);
 			for (int i = 0; i < cosmo.num_ncdm; i++)
 			{
 				if (a >= 1. / (sim.z_switch_deltancdm[i] + 1.) && sim.numpcl[1+sim.baryon_flag+i] > 0)
-					scalarProjectionCIC_project(pcls_ncdm+i, &source);
+					scalarProjectionCIC_project(pcls_ncdm+i, source);
 			}
 		}
-		projection_T00_comm(&source);
+		projection_T00_comm(source);
 		nvtxRangePop();
 		
 #ifdef VELOCITY
@@ -599,16 +662,16 @@ int main(int argc, char **argv)
 		{
 			//projection_init(&Bi);
 			thrust::fill_n(thrust::device, Bi.data(), 3*lat.sitesLocalGross(), Real(0));
-            projection_Ti0_project(&pcls_cdm, &Bi, &phi, &chi);
-            vertexProjectionCIC_comm(&Bi);
-            compute_vi_rescaled(cosmo, &vi, &source, &Bi, a, a_old);
+            projection_Ti0_project(pcls_cdm, Bi, phi, chi);
+            vertexProjectionCIC_comm(Bi);
+            compute_vi_rescaled(cosmo, vi, source, Bi, a, a_old);
             a_old = a;
 		}
 #endif
 		
 		nvtxRangePushA("Zero Tij");
 		//projection_init(&Sij);
-		thrust::fill_n(thrust::device, Sij.data(), 6*lat.sitesLocalGross(), Real(0));
+		thrust::fill_n(thrust::device, Sij->data(), 6*lat->sitesLocalGross(), Real(0));
 		nvtxRangePop();
 
 /*#ifdef ANISOTROPIC_EXPANSION
@@ -631,9 +694,9 @@ int main(int argc, char **argv)
 				{
 					nvtxRangePushA("Tij projection of ncdm particle species");
 #ifdef ANISOTROPIC_EXPANSION
-					projection_Tij_project(pcls_ncdm+i, &Sij, a, &phi, 1., hij_hom);
+					projection_Tij_project(pcls_ncdm+i, Sij, a, phi, 1., hij_hom);
 #else
-					projection_Tij_project(pcls_ncdm+i, &Sij, a, &phi);
+					projection_Tij_project(pcls_ncdm+i, Sij, a, phi);
 #endif
 					nvtxRangePop();
 				}
@@ -652,7 +715,7 @@ int main(int argc, char **argv)
 			if (dtau_old > 0.)
 			{
 				nvtxRangePushA("prepareFTsource");
-				T00hom = prepareFTsource(phi, chi, source, cosmo.Omega_cdm + cosmo.Omega_b + bg_ncdm(a, cosmo), source, 3. * Hconf(a, fourpiG, cosmo) * dx * dx / dtau_old, fourpiG * dx * dx / a, 3. * Hconf(a, fourpiG, cosmo) * Hconf(a, fourpiG, cosmo) * dx * dx);  // prepare nonlinear source for phi update
+				T00hom = prepareFTsource(prepareFTsource_T00_fields, cosmo.Omega_cdm + cosmo.Omega_b + bg_ncdm(a, cosmo), lat, 3. * Hconf(a, fourpiG, cosmo) * dx * dx / dtau_old, fourpiG * dx * dx / a, 3. * Hconf(a, fourpiG, cosmo) * Hconf(a, fourpiG, cosmo) * dx * dx);  // prepare nonlinear source for phi update
 				T00hom /= (double) numpts3d;
 				nvtxRangePop();
 			}
@@ -682,9 +745,10 @@ int main(int argc, char **argv)
 			nvtxRangePushA("offload Tij projection to GPU");
 			f_params[0] = a;
 			f_params[1] = 1.;
-			projection_Tij_project_Async(&pcls_cdm, project_Tij_fields, 2, f_params);
+			cudaMemcpy(d_params, f_params, 2 * sizeof(double), cudaMemcpyDefault);
+			projection_Tij_project_Async(pcls_cdm, project_Tij_fields, 2, d_params);
 			if (sim.baryon_flag)
-				projection_Tij_project_Async(&pcls_b, project_Tij_fields, 2, f_params);
+				projection_Tij_project_Async(pcls_b, project_Tij_fields, 2, d_params);
 			nvtxRangePop();
 		}
 		
@@ -710,7 +774,7 @@ int main(int argc, char **argv)
 				throw std::runtime_error("Error in CUDA kernel called via projection_Tij_project_Async");
 			}
 
-			projection_Tij_comm(&Sij);
+			projection_Tij_comm(Sij);
 			nvtxRangePop();
 		}
 
@@ -728,7 +792,7 @@ int main(int argc, char **argv)
 #endif	
 
 			nvtxRangePushA("Update halo phi");
-			phi.updateHalo();  // communicate halo values
+			phi->updateHalo();  // communicate halo values
 			nvtxRangePop();
 		}
 
@@ -748,7 +812,7 @@ int main(int argc, char **argv)
 		{
 			nvtxRangePushA("Solve chi");
 			nvtxRangePushA("prepareFTsource");
-			prepareFTsource(phi, Sij, Sij, 2. * fourpiG * dx * dx / a);  // prepare nonlinear source for additional equations
+			prepareFTsource(prepareFTsource_Tij_fields, lat, 2. * fourpiG * dx * dx / a);  // prepare nonlinear source for additional equations
 			nvtxRangePop();
 
 #ifdef BENCHMARK
@@ -766,7 +830,7 @@ int main(int argc, char **argv)
 			{
 				nvtxRangePushA("Zero T0i");
 				//projection_init(&Bi);
-				thrust::fill_n(thrust::device, Bi.data(), 3*lat.sitesLocalGross(), Real(0));
+				thrust::fill_n(thrust::device, Bi->data(), 3*lat->sitesLocalGross(), Real(0));
 				nvtxRangePop();
 				//projection_T0i_project(&pcls_cdm, &Bi, &phi);
 				//if (sim.baryon_flag)
@@ -776,16 +840,17 @@ int main(int argc, char **argv)
 					if (a >= 1. / (sim.z_switch_Bncdm[i] + 1.) && sim.numpcl[1+sim.baryon_flag+i] > 0)
 					{
 						nvtxRangePushA("T0i projection of ncdm particle species");
-						projection_T0i_project(pcls_ncdm+i, &Bi, &phi);
+						projection_T0i_project(pcls_ncdm+i, Bi, phi);
 						nvtxRangePop();
 					}
 				}
 				//projection_T0i_comm(&Bi);
 				nvtxRangePushA("offload T0i projection to GPU");
 				f_params[0] = 1.;
-				projection_T0i_project_Async(&pcls_cdm, project_T0i_fields, 2, f_params);
+				cudaMemcpy(d_params, f_params, sizeof(double), cudaMemcpyDefault);
+				projection_T0i_project_Async(pcls_cdm, project_T0i_fields, 2, d_params);
 				if (sim.baryon_flag)
-					projection_T0i_project_Async(&pcls_b, project_T0i_fields, 2, f_params);
+					projection_T0i_project_Async(pcls_b, project_T0i_fields, 2, d_params);
 				nvtxRangePop();
 			}
 
@@ -812,7 +877,7 @@ int main(int argc, char **argv)
 					throw std::runtime_error("Error in CUDA kernel called via projection_T0i_project_Async");
 				}
 
-				projection_T0i_comm(&Bi);
+				projection_T0i_comm(Bi);
 				nvtxRangePop();
 			}
 
@@ -827,7 +892,7 @@ int main(int argc, char **argv)
 			fft_count++;
 #endif	
 			nvtxRangePushA("Update halo chi");
-			chi.updateHalo();  // communicate halo values
+			chi->updateHalo();  // communicate halo values
 			nvtxRangePop();
 			nvtxRangePop();
 		}
@@ -880,7 +945,7 @@ int main(int argc, char **argv)
 			fft_count += 3;
 #endif
 			nvtxRangePushA("Update halo B");
-			Bi.updateHalo();  // communicate halo values
+			Bi->updateHalo();  // communicate halo values
 			nvtxRangePop();
 			nvtxRangePop();
 
@@ -965,7 +1030,7 @@ int main(int argc, char **argv)
 		// lightcone output
 		nvtxRangePushA("Lightcone output");
 		if (sim.num_lightcone > 0)
-			writeLightcones(sim, cosmo, fourpiG, a, tau, dtau, dtau_old, maxvel[0], cycle, h5filename + sim.basename_lightcone, &pcls_cdm, &pcls_b, pcls_ncdm, &phi, &chi, &Bi, &Sij, &BiFT, &SijFT, &plan_Bi, &plan_Sij, done_hij, IDbacklog);
+			writeLightcones(sim, cosmo, fourpiG, a, tau, dtau, dtau_old, maxvel[0], cycle, h5filename + sim.basename_lightcone, pcls_cdm, pcls_b, pcls_ncdm, phi, chi, Bi, Sij, &BiFT, &SijFT, &plan_Bi, &plan_Sij, done_hij, IDbacklog);
 		else done_hij = 0;
 		nvtxRangePop();
 
@@ -980,9 +1045,9 @@ int main(int argc, char **argv)
 			nvtxRangePushA("Snapshot output");
 			COUT << COLORTEXT_CYAN << " writing snapshot" << COLORTEXT_RESET << " at z = " << ((1./a) - 1.) <<  " (cycle " << cycle << "), tau/boxsize = " << tau << endl;
 
-			writeSnapshots(sim, cosmo, fourpiG, a, dtau_old, done_hij, snapcount, h5filename + sim.basename_snapshot, &pcls_cdm, &pcls_b, pcls_ncdm, &phi, &chi, &Bi, &source, &Sij, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij
+			writeSnapshots(sim, cosmo, fourpiG, a, dtau_old, done_hij, snapcount, h5filename + sim.basename_snapshot, pcls_cdm, pcls_b, pcls_ncdm, phi, chi, Bi, source, Sij, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij
 #ifdef CHECK_B
-				, &Bi_check, &BiFT_check, &plan_Bi_check
+				, Bi_check, &BiFT_check, &plan_Bi_check
 #endif
 #ifdef VELOCITY
 				, &vi
@@ -1008,12 +1073,12 @@ int main(int argc, char **argv)
 #ifdef HAVE_CLASS
 				class_background, class_perturbs, ic,
 #endif
-				&pcls_cdm, &pcls_b, pcls_ncdm, &phi, &chi, &Bi, &source, &Sij, zetaFT, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij
+				pcls_cdm, pcls_b, pcls_ncdm, phi, chi, Bi, source, Sij, zetaFT, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij
 #ifdef CHECK_B
-				, &Bi_check, &BiFT_check, &plan_Bi_check
+				, Bi_check, &BiFT_check, &plan_Bi_check
 #endif
 #ifdef VELOCITY
-				, &vi, &viFT, &plan_vi
+				, vi, &viFT, &plan_vi
 #endif
 #ifdef TENSOR_EVOLUTION
 				, &hijFT, &hijprimeFT
@@ -1036,12 +1101,12 @@ int main(int argc, char **argv)
 #ifdef HAVE_CLASS
 				class_background, class_perturbs, ic,
 #endif
-				&pcls_cdm, &pcls_b, pcls_ncdm, &phi, &chi, &Bi, &source, &Sij, zetaFT, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij
+				pcls_cdm, pcls_b, pcls_ncdm, phi, chi, Bi, source, Sij, zetaFT, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij
 #ifdef CHECK_B
-				, &Bi_check, &BiFT_check, &plan_Bi_check
+				, Bi_check, &BiFT_check, &plan_Bi_check
 #endif
 #ifdef VELOCITY
-				, &vi, &viFT, &plan_vi
+				, vi, &viFT, &plan_vi
 #endif
 #ifdef TENSOR_EVOLUTION
 				, &hijFT, &hijprimeFT
@@ -1147,17 +1212,19 @@ int main(int argc, char **argv)
 		nvtxRangePushA("Particle update: cdm and baryons, kick step");
 		f_params[0] = a;
 		f_params[1] = a * a * sim.numpts;
+		cudaMemcpy(d_params, f_params, 7 * sizeof(double), cudaMemcpyDefault);
+
 		if (sim.gr_flag > 0)
 		{
-			maxvel[0] = pcls_cdm.updateVel(update_q_functor(), (dtau + dtau_old) / 2., update_cdm_fields, (1. / a < ic.z_relax + 1. ? 3 : 2), f_params);
+			maxvel[0] = pcls_cdm->updateVel(update_q_functor(), (dtau + dtau_old) / 2., update_cdm_fields, (1. / a < ic.z_relax + 1. ? 3 : 2), d_params);
 			if (sim.baryon_flag)
-				maxvel[1] = pcls_b.updateVel(update_q_functor(), (dtau + dtau_old) / 2., update_b_fields, (1. / a < ic.z_relax + 1. ? 3 : 2), f_params);
+				maxvel[1] = pcls_b->updateVel(update_q_functor(), (dtau + dtau_old) / 2., update_b_fields, (1. / a < ic.z_relax + 1. ? 3 : 2), d_params);
 		}
 		else
 		{
-			maxvel[0] = pcls_cdm.updateVel(update_q_Newton_functor(), (dtau + dtau_old) / 2., update_cdm_fields, ((sim.radiation_flag + sim.fluid_flag > 0 && a < 1. / (sim.z_switch_linearchi + 1.)) ? 2 : 1), f_params);
+			maxvel[0] = pcls_cdm->updateVel(update_q_Newton_functor(), (dtau + dtau_old) / 2., update_cdm_fields, ((sim.radiation_flag + sim.fluid_flag > 0 && a < 1. / (sim.z_switch_linearchi + 1.)) ? 2 : 1), d_params);
 			if (sim.baryon_flag)
-				maxvel[1] = pcls_b.updateVel(update_q_Newton_functor(), (dtau + dtau_old) / 2., update_b_fields, ((sim.radiation_flag + sim.fluid_flag > 0 && a < 1. / (sim.z_switch_linearchi + 1.)) ? 2 : 1), f_params);
+				maxvel[1] = pcls_b->updateVel(update_q_Newton_functor(), (dtau + dtau_old) / 2., update_b_fields, ((sim.radiation_flag + sim.fluid_flag > 0 && a < 1. / (sim.z_switch_linearchi + 1.)) ? 2 : 1), d_params);
 		}
 		nvtxRangePop();
 
@@ -1172,17 +1239,19 @@ int main(int argc, char **argv)
 		nvtxRangePushA("Particle update: cdm and baryons, drift step");
 		f_params[0] = a;
 		f_params[1] = a * a * sim.numpts;
+		cudaMemcpy(d_params, f_params, 2 * sizeof(double), cudaMemcpyDefault);
+
 		if (sim.gr_flag > 0)
 		{
-			pcls_cdm.moveParticles(update_pos_functor(), dtau, update_cdm_fields, (1. / a < ic.z_relax + 1. ? 3 : 0), f_params);
+			pcls_cdm->moveParticles(update_pos_functor(), dtau, update_cdm_fields, (1. / a < ic.z_relax + 1. ? 3 : 0), d_params);
 			if (sim.baryon_flag)
-				pcls_b.moveParticles(update_pos_functor(), dtau, update_b_fields, (1. / a < ic.z_relax + 1. ? 3 : 0), f_params);
+				pcls_b->moveParticles(update_pos_functor(), dtau, update_b_fields, (1. / a < ic.z_relax + 1. ? 3 : 0), d_params);
 		}
 		else
 		{
-			pcls_cdm.moveParticles(update_pos_Newton_functor(), dtau, NULL, 0, f_params);
+			pcls_cdm->moveParticles(update_pos_Newton_functor(), dtau, NULL, 0, d_params);
 			if (sim.baryon_flag)
-				pcls_b.moveParticles(update_pos_Newton_functor(), dtau, NULL, 0, f_params);
+				pcls_b->moveParticles(update_pos_Newton_functor(), dtau, NULL, 0, d_params);
 		}
 		nvtxRangePop();
 
@@ -1278,6 +1347,41 @@ delete [] IDbacklog;
 	if (sim.radiation_flag > 0 || sim.fluid_flag > 0)
 		freeCLASSstructures(class_background, class_perturbs);
 #endif
+
+	cudaFree(d_params);
+	cudaFree(update_cdm_fields);
+	cudaFree(update_b_fields);
+	cudaFree(update_ncdm_fields);
+	cudaFree(project_Tij_fields);
+	cudaFree(project_T0i_fields);
+	cudaFree(prepareFTsource_T00_fields);
+	cudaFree(prepareFTsource_Tij_fields);
+	cudaFree(sourceptr);
+
+	pcls_cdm->~perfParticles_gevolution<part_simple,part_simple_info>();
+	if (sim.baryon_flag)
+		pcls_b->~perfParticles_gevolution<part_simple,part_simple_info>();
+
+	cudaFree(pcls_cdm);
+	cudaFree(pcls_b);
+
+	phi->~Field<Real>();
+	source->~Field<Real>();
+	chi->~Field<Real>();
+	Bi->~Field<Real>();
+	Sij->~Field<Real>();
+
+	cudaFree(phi);
+	cudaFree(source);
+	cudaFree(chi);
+	cudaFree(Bi);
+	cudaFree(Sij);
+
+	lat->~Lattice();
+	cudaFree(lat);
+
+	latFT->~Lattice();
+	cudaFree(latFT);
 
 #ifdef BENCHMARK
 	lightcone_output_time += MPI_Wtime() - ref_time;

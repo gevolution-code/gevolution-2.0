@@ -113,18 +113,18 @@ struct prepareFTsource_Tij_functor
 	}
 };
 
-void prepareFTsource(Field<Real> & phi, Field<Real> & Tij, Field<Real> & Sij, const double coeff)
+void prepareFTsource(Field<Real> ** fields, Lattice * lat, const double coeff)
 {
-	Field<Real> * fields[3] = {&Sij, &Tij, &phi};
+	//Field<Real> * fields[3] = {&Sij, &Tij, &phi};
 	double params = coeff;
 	double * d_params;
 
 	cudaMalloc(&d_params, sizeof(double));
 	cudaMemcpy(d_params, &params, sizeof(double), cudaMemcpyDefault);
 
-	int numpts = phi.lattice().sizeLocal(0);
-	int block_x = phi.lattice().sizeLocal(1);
-	int block_y = phi.lattice().sizeLocal(2);
+	int numpts = lat->sizeLocal(0);
+	int block_x = lat->sizeLocal(1);
+	int block_y = lat->sizeLocal(2);
 
 	lattice_for_each<<<dim3(block_x, block_y), 128>>>(prepareFTsource_Tij_functor(), numpts, fields, 3, d_params, nullptr, nullptr);
 
@@ -176,9 +176,9 @@ struct prepareFTsource_T00_functor
 	}
 };
 
-double prepareFTsource(Field<Real> & phi, Field<Real> & chi, Field<Real> & source, const double bgmodel, Field<Real> & result, const double coeff, const double coeff2, const double coeff3)
+double prepareFTsource(Field<Real> ** fields, const double bgmodel, Lattice * lat, const double coeff, const double coeff2, const double coeff3)
 {
-	Field<Real> * fields[4] = {&result, &source, &phi, &chi};
+	//Field<Real> * fields[4] = {&result, &source, &phi, &chi};
 	double params[4] = {bgmodel, coeff, coeff2, coeff3};
 	double sum = 0.;
 	int reduce = SUM;
@@ -194,9 +194,9 @@ double prepareFTsource(Field<Real> & phi, Field<Real> & chi, Field<Real> & sourc
 	cudaMemcpy(d_sum, &sum, sizeof(double), cudaMemcpyHostToDevice);
 	cudaMemcpy(d_reduce, &reduce, sizeof(int), cudaMemcpyHostToDevice);
 
-	int numpts = result.lattice().sizeLocal(0);
-	int block_x = result.lattice().sizeLocal(1);
-	int block_y = result.lattice().sizeLocal(2);
+	int numpts = lat->sizeLocal(0);
+	int block_x = lat->sizeLocal(1);
+	int block_y = lat->sizeLocal(2);
 
 	lattice_for_each<prepareFTsource_T00_functor, 1><<<dim3(block_x, block_y), 128>>>(prepareFTsource_T00_functor(), numpts, fields, 4, d_params, d_sum, d_reduce);
 

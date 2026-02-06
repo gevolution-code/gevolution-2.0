@@ -2823,7 +2823,7 @@ perfParticles_gevolution<part_simple,part_simple_info> * pcls_cdm, perfParticles
 #ifdef HAVE_CLASS
 		if ((sim.radiation_flag > 0 || sim.fluid_flag > 0) && sim.gr_flag == 0)
 		{
-			projection_T00_project(class_background, class_perturbs, *source, *scalarFT, plan_source, sim, ic, cosmo, fourpiG, a, 1., zetaFT);
+			projection_T00_project(class_background, class_perturbs, source, *scalarFT, plan_source, sim, ic, cosmo, fourpiG, a, 1., zetaFT);
 			if (sim.out_pk & MASK_DELTA)
 			{
 				Omega_ncdm = 0;
@@ -3054,7 +3054,16 @@ perfParticles_gevolution<part_simple,part_simple_info> * pcls_cdm, perfParticles
 		}
 		projection_Tij_comm(Sij);
 
-		prepareFTsource(*phi, *Sij, *Sij, 2. * fourpiG / (double) sim.numpts / (double) sim.numpts / a);
+		Field<Real> * h_fields[3] = {Sij, Sij, phi};
+		Field<Real> ** d_fields;
+
+		cudaMalloc(&d_fields, 3 * sizeof(Field<Real>*));
+		cudaMemcpy(d_fields, h_fields, 3 * sizeof(Field<Real>*), cudaMemcpyDefault);
+
+		prepareFTsource(d_fields, &(phi->lattice()), 2. * fourpiG / (double) sim.numpts / (double) sim.numpts / a);
+
+		cudaFree(d_fields);
+
 		plan_Sij->execute(FFT_FORWARD);
 		projectFTtensor(*SijFT, *SijFT);
 
@@ -3082,7 +3091,7 @@ perfParticles_gevolution<part_simple,part_simple_info> * pcls_cdm, perfParticles
 #ifdef HAVE_CLASS
 		if (sim.radiation_flag > 0 || sim.fluid_flag > 0)
 		{
-			projection_T00_project(class_background, class_perturbs, *source, *scalarFT, plan_source, sim, ic, cosmo, fourpiG, a, 1., zetaFT);
+			projection_T00_project(class_background, class_perturbs, source, *scalarFT, plan_source, sim, ic, cosmo, fourpiG, a, 1., zetaFT);
 			if (sim.out_pk & MASK_DELTA)
 			{
 				Omega_ncdm = 0;

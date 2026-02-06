@@ -4,9 +4,9 @@
 // 
 // code components related to radiation and linear relativistic species
 //
-// Author: Julian Adamek (Université de Genève & Observatoire de Paris & Queen Mary University of London & Universität Zürich)
+// Author: Julian Adamek (Université de Genève & Observatoire de Paris & Queen Mary University of London & Universität Zürich & ETH Zürich)
 //
-// Last modified: January 2025
+// Last modified: February 2026
 //
 //////////////////////////
 
@@ -28,7 +28,7 @@
 // Arguments:
 //   class_background  CLASS structure that contains the background
 //   class_perturbs    CLASS structure that contains the perturbations
-//   source            reference to field that will contain the realization
+//   source            pointer to field that will contain the realization
 //   scalarFT          reference to Fourier image of that field
 //   plan_source       pointer to FFT planner
 //   sim               simulation metadata structure
@@ -43,7 +43,7 @@
 // 
 //////////////////////////
 
-void projection_T00_project(background & class_background, perturbs & class_perturbs, Field<Real> & source, Field<Cplx> & scalarFT, PlanFFT<Cplx> * plan_source, metadata & sim, icsettings & ic, cosmology & cosmo, const double fourpiG, double a, double coeff = 1., Field<Cplx> * zetaFT = NULL)
+void projection_T00_project(background & class_background, perturbs & class_perturbs, Field<Real> * source, Field<Cplx> & scalarFT, PlanFFT<Cplx> * plan_source, metadata & sim, icsettings & ic, cosmology & cosmo, const double fourpiG, double a, double coeff = 1., Field<Cplx> * zetaFT = NULL)
 {
 	gsl_spline * tk1 = NULL;
 	gsl_spline * tk2 = NULL;
@@ -52,7 +52,7 @@ void projection_T00_project(background & class_background, perturbs & class_pert
 	char ncdm_name[8];
 	int n = 0;
 	double rescale, Omega_ncdm = 0., Omegaw_ncdm = 0., Omega_rad = 0., Omega_fld = 0., bg_smg = 0.;
-	Site x(source.lattice());
+	Site x(source->lattice());
 	rKSite kFT(scalarFT.lattice());
 
 	if (a < 1. / (sim.z_switch_deltarad + 1.) && cosmo.Omega_g + cosmo.Omega_ur > 0 && sim.radiation_flag == 1)
@@ -225,16 +225,20 @@ void projection_T00_project(background & class_background, perturbs & class_pert
 		free(delta);
 		free(k);
 
-		Field<Real> * fieldptr = &source;
+		Field<Real> ** d_fieldptr;
 		double * d_params;
+
+		cudaMalloc(&d_fieldptr, sizeof(Field<Real> *));
+		cudaMemcpy(d_fieldptr, &source, sizeof(Field<Real> *), cudaMemcpyDefault);
 
 		cudaMalloc(&d_params, sizeof(double));
 		cudaMemcpy(d_params, &Omega_ncdm, sizeof(double), cudaMemcpyDefault);
 
-		lattice_for_each<<<dim3(source.lattice().sizeLocal(1), source.lattice().sizeLocal(2)), 128>>>(lattice_add_functor(), sim.numpts, &fieldptr, 1, d_params, nullptr, nullptr);
+		lattice_for_each<<<dim3(source->lattice().sizeLocal(1), source->lattice().sizeLocal(2)), 128>>>(lattice_add_functor(), sim.numpts, d_fieldptr, 1, d_params, nullptr, nullptr);
 
 		cudaDeviceSynchronize();
 		cudaFree(d_params);
+		cudaFree(d_fieldptr);
 	}
 }
 

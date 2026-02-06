@@ -2454,8 +2454,17 @@ parameter * params, int & numparam)
 	if (sim.baryon_flag)
 		projection_Tij_project(pcls_b, Sij, a, phi);
 	projection_Tij_comm(Sij);
+
+	Field<Real> * h_fields[3] = {Sij, Sij, phi};
+	Field<Real> ** d_fields;
+
+	cudaMalloc(&d_fields, 3 * sizeof(Field<Real>*));
+	cudaMemcpy(d_fields, h_fields, 3 * sizeof(Field<Real>*), cudaMemcpyDefault);
 	
-	prepareFTsource(*phi, *Sij, *Sij, 2. * fourpiG / a / (double) sim.numpts / (double) sim.numpts);	
+	prepareFTsource(d_fields, &(phi->lattice()), 2. * fourpiG / a / (double) sim.numpts / (double) sim.numpts);
+
+	cudaFree(d_fields);
+	
 	plan_Sij->execute(FFT_FORWARD);	
 	projectFTscalar(*SijFT, *scalarFT);
 	plan_chi->execute(FFT_BACKWARD);		
