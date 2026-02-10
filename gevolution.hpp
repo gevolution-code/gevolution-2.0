@@ -1394,144 +1394,145 @@ void projection_T00_project(Particles<part, part_info, part_dataType> * pcls, Fi
 	}  
 }
 
-__global__ void projection_comm1_localhalo(Field<Real> * field, long sizeLocalGross[3], int halo)
+__global__ void projection_comm1_localhalo(Field<Real> * field, long sizeLocalGross0, long sizeLocalGross1, int halo)
 {
 	long k = blockIdx.x + halo - 1;
 	int comp = field->components();
 	
-	for (long j = threadIdx.x + halo - 1; j < sizeLocalGross[1] - halo + 1; j += 128)
+	for (long j = threadIdx.x + halo - 1; j < sizeLocalGross1 - halo + 1; j += 128)
 	{
 		for (int c = 0; c < comp; c++)
 		{
-			(*field)(static_cast<long>(halo) + sizeLocalGross[0] * (j + sizeLocalGross[1] * k), c) += (*field)(static_cast<long>(-halo) + sizeLocalGross[0] * (1L + j + sizeLocalGross[1] * k), c);
+			(*field)(static_cast<long>(halo) + sizeLocalGross0 * (j + sizeLocalGross1 * k), c) += (*field)(static_cast<long>(-halo) + sizeLocalGross0 * (1L + j + sizeLocalGross1 * k), c);
 		}		
 	}
 }
 
-__global__ void projection_comm2_localhalo(Field<Real> * field, long sizeLocalGross[3], int halo)
+__global__ void projection_comm2_localhalo(Field<Real> * field, long sizeLocalGross0, long sizeLocalGross1, int halo)
 {
 	long k = blockIdx.x + halo - 1;
 	
-	for (long j = threadIdx.x + halo - 1; j < sizeLocalGross[1] - halo + 1; j += 128)
+	for (long j = threadIdx.x + halo - 1; j < sizeLocalGross1 - halo + 1; j += 128)
 	{
-		(*field)(static_cast<long>(-halo) - 1L + sizeLocalGross[0] * (j + 1L + sizeLocalGross[1] * k), 0, 1) += (*field)(static_cast<long>(halo) - 1L + sizeLocalGross[0] * (j + sizeLocalGross[1] * k), 0, 1);
-		(*field)(static_cast<long>(-halo) - 1L + sizeLocalGross[0] * (j + 1L + sizeLocalGross[1] * k), 0, 2) += (*field)(static_cast<long>(halo) - 1L + sizeLocalGross[0] * (j + sizeLocalGross[1] * k), 0, 2);
-		(*field)(static_cast<long>(-halo) - 1L + sizeLocalGross[0] * (j + 1L + sizeLocalGross[1] * k), 1, 2) += (*field)(static_cast<long>(halo) - 1L + sizeLocalGross[0] * (j + sizeLocalGross[1] * k), 1, 2);
+		(*field)(static_cast<long>(-halo) - 1L + sizeLocalGross0 * (j + 1L + sizeLocalGross1 * k), 0, 1) += (*field)(static_cast<long>(halo) - 1L + sizeLocalGross0 * (j + sizeLocalGross1 * k), 0, 1);
+		(*field)(static_cast<long>(-halo) - 1L + sizeLocalGross0 * (j + 1L + sizeLocalGross1 * k), 0, 2) += (*field)(static_cast<long>(halo) - 1L + sizeLocalGross0 * (j + sizeLocalGross1 * k), 0, 2);
+		(*field)(static_cast<long>(-halo) - 1L + sizeLocalGross0 * (j + 1L + sizeLocalGross1 * k), 1, 2) += (*field)(static_cast<long>(halo) - 1L + sizeLocalGross0 * (j + sizeLocalGross1 * k), 1, 2);
 	}
 }
 
-__global__ void projection_comm1_pack_y(Field<Real> * field, long sizeLocalGross[3], int halo, Real * buffer)
+__global__ void projection_comm1_pack_y(Field<Real> * field, long sizeLocalGross0, long sizeLocalGross1, int halo, Real * buffer)
 {
 	long k = blockIdx.x;
 	int comp = field->components();
 
-	for (long i = threadIdx.x; i < sizeLocalGross[0] - 2*halo; i += 128)
+	for (long i = threadIdx.x; i < sizeLocalGross0 - 2*halo; i += 128)
 	{
 		for (int c = 0; c < comp; c++)
 		{
-			buffer[comp * (k * (sizeLocalGross[0] - 2*halo) + i) + c] = (*field)(halo + i + sizeLocalGross[0] * (sizeLocalGross[1] * (k + halo + 1) - halo), c);
+			buffer[comp * (k * (sizeLocalGross0 - 2*halo) + i) + c] = (*field)(halo + i + sizeLocalGross0 * (sizeLocalGross1 * (k + halo + 1) - halo), c);
 		}
 	}	
 }
 
-__global__ void projection_comm2_pack_y(Field<Real> * field, long sizeLocalGross[3], int halo, Real * buffer, Real * buffer2)
+__global__ void projection_comm2_pack_y(Field<Real> * field, long sizeLocalGross0, long sizeLocalGross1, int halo, Real * buffer, Real * buffer2)
 {
 	long k = blockIdx.x;
 
-	for (long i = threadIdx.x; i < sizeLocalGross[0] - 2*halo; i += 128)
-	{
+	for (long i = threadIdx.x; i < sizeLocalGross0 - 2*halo; i += 128)
+{
 		for (int c = 0; c < 6; c++)
 		{
-			buffer[6L * (k * (sizeLocalGross[0] - 2*halo) + i) + c] = (*field)(halo + i + sizeLocalGross[0] * (sizeLocalGross[1] * (k + halo) - halo), c);
+			buffer[6L * (k * (sizeLocalGross0 - 2*halo) + i) + c] = (*field)(halo + i + sizeLocalGross0 * (sizeLocalGross1 * (k + halo) - halo), c);
 		}
 
-		buffer2[3L * (k * (sizeLocalGross[0] - 2*halo) + i)] = (*field)(halo + i + sizeLocalGross[0] * (sizeLocalGross[1] * (k + halo - 1) + halo - 1), 0, 1);
-		buffer2[3L * (k * (sizeLocalGross[0] - 2*halo) + i) + 1] = (*field)(halo + i + sizeLocalGross[0] * (sizeLocalGross[1] * (k + halo - 1) + halo - 1), 0, 2);
-		buffer2[3L * (k * (sizeLocalGross[0] - 2*halo) + i) + 2] = (*field)(halo + i + sizeLocalGross[0] * (sizeLocalGross[1] * (k + halo - 1) + halo - 1), 1, 2);
+		buffer2[3L * (k * (sizeLocalGross0 - 2*halo) + i)] = (*field)(halo + i + sizeLocalGross0 * (sizeLocalGross1 * (k + halo - 1) + halo - 1), 0, 1);
+		buffer2[3L * (k * (sizeLocalGross0 - 2*halo) + i) + 1] = (*field)(halo + i + sizeLocalGross0 * (sizeLocalGross1 * (k + halo - 1) + halo - 1), 0, 2);
+		buffer2[3L * (k * (sizeLocalGross0 - 2*halo) + i) + 2] = (*field)(halo + i + sizeLocalGross0 * (sizeLocalGross1 * (k + halo - 1) + halo - 1), 1, 2);
 	}	
 }
 
-__global__ void projection_comm1_unpack_y(Field<Real> * field, long sizeLocalGross[3], int halo, Real * buffer)
+__global__ void projection_comm1_unpack_y(Field<Real> * field, long sizeLocalGross0, long sizeLocalGross1, int halo, Real * buffer)
 {
 	long k = blockIdx.x;
 	int comp = field->components();
 
-	for (long i = threadIdx.x; i < sizeLocalGross[0] - 2*halo; i += 128)
+	for (long i = threadIdx.x; i < sizeLocalGross0 - 2*halo; i += 128)
 	{
 		for (int c = 0; c < comp; c++)
 		{
-			(*field)(halo + i + sizeLocalGross[0] * (sizeLocalGross[1] * (k + halo) + halo), c) += buffer[comp * (k * (sizeLocalGross[0] - 2*halo) + i) + c];
+			(*field)(halo + i + sizeLocalGross0 * (sizeLocalGross1 * (k + halo) + halo), c) += buffer[comp * (k * (sizeLocalGross0 - 2*halo) + i) + c];
 		}
 	}
 }
 
-__global__ void projection_comm2_unpack_y(Field<Real> * field, long sizeLocalGross[3], int halo, Real * buffer, Real * buffer2)
+__global__ void projection_comm2_unpack_y(Field<Real> * field, long sizeLocalGross0, long sizeLocalGross1, int halo, Real * buffer, Real * buffer2)
 {
 	long k = blockIdx.x;
 
-	for (long i = threadIdx.x; i < sizeLocalGross[0] - 2*halo; i += 128)
+	for (long i = threadIdx.x; i < sizeLocalGross0 - 2*halo; i += 128)
 	{
 		for (int c = 0; c < 6; c++)
 		{
-			(*field)(halo + i + sizeLocalGross[0] * (sizeLocalGross[1] * (k + halo - 1) + halo), c) += buffer[6L * (k * (sizeLocalGross[0] - 2*halo) + i) + c];
+			(*field)(halo + i + sizeLocalGross0 * (sizeLocalGross1 * (k + halo - 1) + halo), c) += buffer[6L * (k * (sizeLocalGross0 - 2*halo) + i) + c];
 		}
 
-		(*field)(halo + i + sizeLocalGross[0] * (sizeLocalGross[1] * (k + halo) - halo - 1), 0, 1) += buffer2[3L * (k * (sizeLocalGross[0] - 2*halo) + i)];
-		(*field)(halo + i + sizeLocalGross[0] * (sizeLocalGross[1] * (k + halo) - halo - 1), 0, 2) += buffer2[3L * (k * (sizeLocalGross[0] - 2*halo) + i) + 1];
-		(*field)(halo + i + sizeLocalGross[0] * (sizeLocalGross[1] * (k + halo) - halo - 1), 1, 2) += buffer2[3L * (k * (sizeLocalGross[0] - 2*halo) + i) + 2];
+		(*field)(halo + i + sizeLocalGross0 * (sizeLocalGross1 * (k + halo) - halo - 1), 0, 1) += buffer2[3L * (k * (sizeLocalGross0 - 2*halo) + i)];
+		(*field)(halo + i + sizeLocalGross0 * (sizeLocalGross1 * (k + halo) - halo - 1), 0, 2) += buffer2[3L * (k * (sizeLocalGross0 - 2*halo) + i) + 1];
+		(*field)(halo + i + sizeLocalGross0 * (sizeLocalGross1 * (k + halo) - halo - 1), 1, 2) += buffer2[3L * (k * (sizeLocalGross0 - 2*halo) + i) + 2];
 	}
 }
 
-__global__ void projection_comm1_pack_z(Field<Real> * field, long sizeLocalGross[3], int halo, Real * buffer)
+__global__ void projection_comm1_pack_z(Field<Real> * field, long sizeLocalGross0, long sizeLocalGross1, long sizeLocalGross2, int halo, Real * buffer)
 {
 	long j = blockIdx.x;
 	int comp = field->components();
 
-	for (long i = threadIdx.x; i < sizeLocalGross[0] - 2*halo; i += 128)
+	for (long i = threadIdx.x; i < sizeLocalGross0 - 2*halo; i += 128)
 	{
 		for (int c = 0; c < comp; c++)
 		{
-			buffer[comp * (j * (sizeLocalGross[0] - 2*halo) + i) + c] = (*field)(halo + i + sizeLocalGross[0] * (j + halo + sizeLocalGross[1] * (sizeLocalGross[2] - halo)), c);
+			buffer[comp * (j * (sizeLocalGross0 - 2*halo) + i) + c] = (*field)(halo + i + sizeLocalGross0 * (j + halo + sizeLocalGross1 * (sizeLocalGross2 - halo)), c);
 		}
 	}
 }
 
-__global__ void projection_comm2_pack_z(Field<Real> * field, long sizeLocalGross[3], int halo, Real * buffer)
+__global__ void projection_comm2_pack_z(Field<Real> * field, long sizeLocalGross0, long sizeLocalGross1, int halo, Real * buffer)
 {
 	long j = blockIdx.x;
 
-	for (long i = threadIdx.x; i < sizeLocalGross[0] - 2*halo; i += 128)
+	for (long i = threadIdx.x; i < sizeLocalGross0 - 2*halo; i += 128)
 	{
-		buffer[3L * (j * (sizeLocalGross[0] - 2*halo) + i)] = (*field)(halo + i + sizeLocalGross[0] * (j + halo + sizeLocalGross[1] * (halo - 1)), 0, 1);
-		buffer[3L * (j * (sizeLocalGross[0] - 2*halo) + i) + 1] = (*field)(halo + i + sizeLocalGross[0] * (j + halo + sizeLocalGross[1] * (halo - 1)), 0, 2);
-		buffer[3L * (j * (sizeLocalGross[0] - 2*halo) + i) + 2] = (*field)(halo + i + sizeLocalGross[0] * (j + halo + sizeLocalGross[1] * (halo - 1)), 1, 2);
+		buffer[3L * (j * (sizeLocalGross0 - 2*halo) + i)] = (*field)(halo + i + sizeLocalGross0 * (j + halo + sizeLocalGross1 * (halo - 1)), 0, 1);
+		buffer[3L * (j * (sizeLocalGross0 - 2*halo) + i) + 1] = (*field)(halo + i + sizeLocalGross0 * (j + halo + sizeLocalGross1 * (halo - 1)), 0, 2);
+		buffer[3L * (j * (sizeLocalGross0 - 2*halo) + i) + 2] = (*field)(halo + i + sizeLocalGross0 * (j + halo + sizeLocalGross1 * (halo - 1)), 1, 2);
 	}
 }
 
-__global__ void projection_comm1_unpack_z(Field<Real> * field, long sizeLocalGross[3], int halo, Real * buffer)
+
+__global__ void projection_comm1_unpack_z(Field<Real> * field, long sizeLocalGross0, long sizeLocalGross1, int halo, Real * buffer)
 {
 	long j = blockIdx.x;
 	int comp = field->components();
 
-	for (long i = threadIdx.x; i < sizeLocalGross[0] - 2*halo; i += 128)
+	for (long i = threadIdx.x; i < sizeLocalGross0 - 2*halo; i += 128)
 	{
 		for (int c = 0; c < comp; c++)
 		{
-			(*field)(halo + i + sizeLocalGross[0] * (j + halo + sizeLocalGross[1] * halo), c) += buffer[comp * (j * (sizeLocalGross[0] - 2*halo) + i) + c];
+			(*field)(halo + i + sizeLocalGross0 * (j + halo + sizeLocalGross1 * halo), c) += buffer[comp * (j * (sizeLocalGross0 - 2*halo) + i) + c];
 		}
 	}
 }
 
-__global__ void projection_comm2_unpack_z(Field<Real> * field, long sizeLocalGross[3], int halo, Real * buffer)
+__global__ void projection_comm2_unpack_z(Field<Real> * field, long sizeLocalGross0, long sizeLocalGross1, long sizeLocalGross2, int halo, Real * buffer)
 {
 	long j = blockIdx.x;
 
-	for (long i = threadIdx.x; i < sizeLocalGross[0] - 2*halo; i += 128)
+	for (long i = threadIdx.x; i < sizeLocalGross0 - 2*halo; i += 128)
 	{
 		
-		(*field)(halo + i + sizeLocalGross[0] * (j + halo + sizeLocalGross[1] * (sizeLocalGross[2] - halo - 1)), 0, 1) += buffer[3L * (j * (sizeLocalGross[0] - 2*halo) + i)];
-		(*field)(halo + i + sizeLocalGross[0] * (j + halo + sizeLocalGross[1] * (sizeLocalGross[2] - halo - 1)), 0, 2) += buffer[3L * (j * (sizeLocalGross[0] - 2*halo) + i) + 1];
-		(*field)(halo + i + sizeLocalGross[0] * (j + halo + sizeLocalGross[1] * (sizeLocalGross[2] - halo - 1)), 1, 2) += buffer[3L * (j * (sizeLocalGross[0] - 2*halo) + i) + 2];
+		(*field)(halo + i + sizeLocalGross0 * (j + halo + sizeLocalGross1 * (sizeLocalGross2 - halo - 1)), 0, 1) += buffer[3L * (j * (sizeLocalGross0 - 2*halo) + i)];
+		(*field)(halo + i + sizeLocalGross0 * (j + halo + sizeLocalGross1 * (sizeLocalGross2 - halo - 1)), 0, 2) += buffer[3L * (j * (sizeLocalGross0 - 2*halo) + i) + 1];
+		(*field)(halo + i + sizeLocalGross0 * (j + halo + sizeLocalGross1 * (sizeLocalGross2 - halo - 1)), 1, 2) += buffer[3L * (j * (sizeLocalGross0 - 2*halo) + i) + 2];
 	}
 }
 
@@ -1548,59 +1549,87 @@ void projection_comm1(Field<Real> * field)
 	Real * buffer = (Real*) malloc(2*sizeof(Real)*buffer_size);
 	Real * rec_buffer = buffer + buffer_size;
 
-	projection_comm1_localhalo<<<sizeLocal[2]+2, 128>>>(field, sizeLocalGross, halo);
+	Real * d_buffer;
 
-	auto success = cudaDeviceSynchronize();
+	cudaStream_t comm_stream;
 
+    auto success = cudaStreamCreateWithFlags(&comm_stream, cudaStreamNonBlocking);
+    if (success != cudaSuccess)
+    {
+        std::cerr << "CUDA stream creation failed: " << cudaGetErrorString(success) << std::endl;
+        throw std::runtime_error("Error in CUDA stream creation for projection_comm1");
+    }
+
+	success = cudaMallocAsync(&d_buffer, sizeof(Real)*buffer_size, comm_stream);
 	if (success != cudaSuccess)
 	{
-		std::cerr << "Error in projection_comm1_localhalo: " << cudaGetErrorString(success) << endl;
-		throw std::runtime_error("Error in projection_comm1_localhalo");
+		std::cerr << "CUDA malloc failed: " << cudaGetErrorString(success) << std::endl;
+		throw std::runtime_error("Error in CUDA malloc for projection_comm1");
 	}
 
-	projection_comm1_pack_y<<<sizeLocal[2]+1, 128>>>(field, sizeLocalGross, halo, buffer);
+	projection_comm1_localhalo<<<sizeLocal[2]+2, 128, 0, comm_stream>>>(field, sizeLocalGross[0], sizeLocalGross[1], halo);
 
-	success = cudaDeviceSynchronize();
+	projection_comm1_pack_y<<<sizeLocal[2]+1, 128, 0, comm_stream>>>(field, sizeLocalGross[0], sizeLocalGross[1], halo, d_buffer);
 
+	cudaMemcpyAsync(buffer, d_buffer, sizeof(Real)*buffer_size_y, cudaMemcpyDefault, comm_stream);
+
+	success = cudaStreamSynchronize(comm_stream);
 	if (success != cudaSuccess)
 	{
-		std::cerr << "Error in projection_comm1_pack_y: " << cudaGetErrorString(success) << endl;
-		throw std::runtime_error("Error in projection_comm1_pack_y");
+		std::cerr << "Error in projection_comm1: " << cudaGetErrorString(success) << std::endl;
+		cudaError_t lastError = cudaGetLastError();
+		std::cerr << "CUDA last known error: " << cudaGetErrorString(lastError) << std::endl;
+		throw std::runtime_error("Error in projection_comm1");
 	}
 
 	parallel.sendUp_dim1(buffer, rec_buffer, buffer_size_y);
 
-	projection_comm1_unpack_y<<<sizeLocal[2]+1, 128>>>(field, sizeLocalGross, halo, rec_buffer);
+	cudaMemcpyAsync(d_buffer, rec_buffer, sizeof(Real)*buffer_size_y, cudaMemcpyDefault, comm_stream);
 
-	success = cudaDeviceSynchronize();
+	projection_comm1_unpack_y<<<sizeLocal[2]+1, 128, 0, comm_stream>>>(field, sizeLocalGross[0], sizeLocalGross[1], halo, d_buffer);
+
+	success = cudaStreamSynchronize(comm_stream);
 
 	if (success != cudaSuccess)
 	{
-		std::cerr << "Error in projection_comm1_unpack_y: " << cudaGetErrorString(success) << endl;
-		throw std::runtime_error("Error in projection_comm1_unpack_y");
+		std::cerr << "Error in projection_comm1: " << cudaGetErrorString(success) << std::endl;
+		cudaError_t lastError = cudaGetLastError();
+		std::cerr << "CUDA last known error: " << cudaGetErrorString(lastError) << std::endl;
+		throw std::runtime_error("Error in projection_comm1");
 	}
 
-	projection_comm1_pack_z<<<sizeLocal[1], 128>>>(field, sizeLocalGross, halo, buffer);
+	projection_comm1_pack_z<<<sizeLocal[1], 128, 0, comm_stream>>>(field, sizeLocalGross[0], sizeLocalGross[1], sizeLocalGross[2], halo, d_buffer);
 
-	success = cudaDeviceSynchronize();
+	cudaMemcpyAsync(buffer, d_buffer, sizeof(Real)*buffer_size_z, cudaMemcpyDefault, comm_stream);
+
+	success = cudaStreamSynchronize(comm_stream);
 
 	if (success != cudaSuccess)
 	{
-		std::cerr << "Error in projection_comm1_pack_z: " << cudaGetErrorString(success) << endl;
-		throw std::runtime_error("Error in projection_comm1_pack_z");
+		std::cerr << "Error in projection_comm1: " << cudaGetErrorString(success) << std::endl;
+		cudaError_t lastError = cudaGetLastError();
+		std::cerr << "CUDA last known error: " << cudaGetErrorString(lastError) << std::endl;
+		throw std::runtime_error("Error in projection_comm1");
 	}
 
 	parallel.sendUp_dim0(buffer, rec_buffer, buffer_size_z);
 
-	projection_comm1_unpack_z<<<sizeLocal[1], 128>>>(field, sizeLocalGross, halo, rec_buffer);
+	cudaMemcpyAsync(d_buffer, rec_buffer, sizeof(Real)*buffer_size_z, cudaMemcpyDefault, comm_stream);
 
-	success = cudaDeviceSynchronize();
+	projection_comm1_unpack_z<<<sizeLocal[1], 128, 0, comm_stream>>>(field, sizeLocalGross[0], sizeLocalGross[1], halo, d_buffer);
 
+	cudaFreeAsync(d_buffer, comm_stream);
+
+	success = cudaStreamSynchronize(comm_stream);
 	if (success != cudaSuccess)
 	{
-		std::cerr << "Error in projection_comm1_unpack_z: " << cudaGetErrorString(success) << endl;
-		throw std::runtime_error("Error in projection_comm1_unpack_z");
+		std::cerr << "Error in projection_comm1: " << cudaGetErrorString(success) << std::endl;
+		cudaError_t lastError = cudaGetLastError();
+		std::cerr << "CUDA last known error: " << cudaGetErrorString(lastError) << std::endl;
+		throw std::runtime_error("Error in projection_comm1");
 	}
+
+	cudaStreamDestroy(comm_stream);
 
 	free(buffer);
 }
@@ -1620,65 +1649,100 @@ void projection_Tij_comm2(Field<Real> * field)
 	Real * buffer2 = rec_buffer + buffer_size;
 	Real * rec_buffer2 = buffer2 + buffer_size/2;
 
-	projection_comm1_localhalo<<<sizeLocal[2]+2, 128>>>(field, sizeLocalGross, halo);
+	Real * d_buffer;
+	Real * d_buffer2;
 
-	projection_comm2_localhalo<<<sizeLocal[2]+2, 128>>>(field, sizeLocalGross, halo);
+	cudaStream_t comm_stream;
 
-	auto success = cudaDeviceSynchronize();
-
+	auto success = cudaStreamCreateWithFlags(&comm_stream, cudaStreamNonBlocking);
 	if (success != cudaSuccess)
 	{
-		std::cerr << "Error in projection_comm[1/2]_localhalo: " << cudaGetErrorString(success) << endl;
+		std::cerr << "CUDA stream creation failed: " << cudaGetErrorString(success) << std::endl;
+		throw std::runtime_error("Error in CUDA stream creation for projection_Tij_comm2");
+	}
+
+	success = cudaMallocAsync(&d_buffer, sizeof(Real)*(buffer_size + buffer_size/2), comm_stream);
+	if (success != cudaSuccess)
+	{
+		std::cerr << "CUDA malloc failed: " << cudaGetErrorString(success) << std::endl;
+		throw std::runtime_error("Error in CUDA malloc for projection_Tij_comm2");
+	}
+
+	d_buffer2 = d_buffer + buffer_size;
+
+	projection_comm1_localhalo<<<sizeLocal[2]+2, 128, 0, comm_stream>>>(field, sizeLocalGross[0], sizeLocalGross[1], halo);
+
+	projection_comm2_localhalo<<<sizeLocal[2]+2, 128, 0, comm_stream>>>(field, sizeLocalGross[0], sizeLocalGross[1], halo);
+
+	success = cudaStreamSynchronize(comm_stream);
+	if (success != cudaSuccess)
+	{
+		std::cerr << "Error in projection_comm[1/2]_localhalo: " << cudaGetErrorString(success) << std::endl;
 		throw std::runtime_error("Error in projection_comm[1/2]_localhalo");
 	}
 
-	projection_comm2_pack_y<<<sizeLocal[2]+2, 128>>>(field, sizeLocalGross, halo, buffer, buffer2);
+	projection_comm2_pack_y<<<sizeLocal[2]+2, 128, 0, comm_stream>>>(field, sizeLocalGross[0], sizeLocalGross[1], halo, d_buffer, d_buffer2);
 
-	success = cudaDeviceSynchronize();
+	cudaMemcpyAsync(buffer, d_buffer, sizeof(Real)*buffer_size_y, cudaMemcpyDefault, comm_stream);
+	cudaMemcpyAsync(buffer2, d_buffer2, sizeof(Real)*buffer_size_y/2, cudaMemcpyDefault, comm_stream);
 
+	success = cudaStreamSynchronize(comm_stream);
 	if (success != cudaSuccess)
 	{
-		std::cerr << "Error in projection_comm2_pack_y: " << cudaGetErrorString(success) << endl;
+		std::cerr << "Error in projection_comm2_pack_y: " << cudaGetErrorString(success) << std::endl;
 		throw std::runtime_error("Error in projection_comm2_pack_y");
 	}
 
 	parallel.sendUpDown_dim1(buffer, rec_buffer, buffer_size_y, buffer2, rec_buffer2, buffer_size_y/2);
 
-	projection_comm2_unpack_y<<<sizeLocal[2]+2, 128>>>(field, sizeLocalGross, halo, rec_buffer, rec_buffer2);
+	cudaMemcpyAsync(d_buffer, rec_buffer, sizeof(Real)*buffer_size_y, cudaMemcpyDefault, comm_stream);
+	cudaMemcpyAsync(d_buffer2, rec_buffer2, sizeof(Real)*buffer_size_y/2, cudaMemcpyDefault, comm_stream);
 
-	success = cudaDeviceSynchronize();
+	projection_comm2_unpack_y<<<sizeLocal[2]+2, 128, 0, comm_stream>>>(field, sizeLocalGross[0], sizeLocalGross[1], halo, d_buffer, d_buffer2);
+
+	success = cudaStreamSynchronize(comm_stream);
 
 	if (success != cudaSuccess)
 	{
-		std::cerr << "Error in projection_comm2_unpack_y: " << cudaGetErrorString(success) << endl;
+		std::cerr << "Error in projection_comm2_unpack_y: " << cudaGetErrorString(success) << std::endl;
 		throw std::runtime_error("Error in projection_comm2_unpack_y");
 	}
 
-	projection_comm1_pack_z<<<sizeLocal[1], 128>>>(field, sizeLocalGross, halo, buffer);
+	projection_comm1_pack_z<<<sizeLocal[1], 128, 0, comm_stream>>>(field, sizeLocalGross[0], sizeLocalGross[1], sizeLocalGross[2], halo, d_buffer);
 
-	projection_comm2_pack_z<<<sizeLocal[1], 128>>>(field, sizeLocalGross, halo, buffer2);
+	projection_comm2_pack_z<<<sizeLocal[1], 128, 0, comm_stream>>>(field, sizeLocalGross[0], sizeLocalGross[1], halo, d_buffer2);
 
-	success = cudaDeviceSynchronize();
+	cudaMemcpyAsync(buffer, d_buffer, sizeof(Real)*buffer_size_z, cudaMemcpyDefault, comm_stream);
+	cudaMemcpyAsync(buffer2, d_buffer2, sizeof(Real)*buffer_size_z/2, cudaMemcpyDefault, comm_stream);
+
+	success = cudaStreamSynchronize(comm_stream);
 
 	if (success != cudaSuccess)
 	{
-		std::cerr << "Error in projection_comm[1/2]_pack_z: " << cudaGetErrorString(success) << endl;
+		std::cerr << "Error in projection_comm[1/2]_pack_z: " << cudaGetErrorString(success) << std::endl;
 		throw std::runtime_error("Error in projection_comm[1/2]_pack_z");
 	}
 
 	parallel.sendUpDown_dim0(buffer, rec_buffer, buffer_size_z, buffer2, rec_buffer2, buffer_size_z/2);
 
-	projection_comm1_unpack_z<<<sizeLocal[1], 128>>>(field, sizeLocalGross, halo, rec_buffer);
+	cudaMemcpyAsync(d_buffer, rec_buffer, sizeof(Real)*buffer_size_z, cudaMemcpyDefault, comm_stream);
+	cudaMemcpyAsync(d_buffer2, rec_buffer2, sizeof(Real)*buffer_size_z/2, cudaMemcpyDefault, comm_stream);
 
-	projection_comm2_unpack_z<<<sizeLocal[1], 128>>>(field, sizeLocalGross, halo, rec_buffer2);
+	projection_comm1_unpack_z<<<sizeLocal[1], 128, 0, comm_stream>>>(field, sizeLocalGross[0], sizeLocalGross[1], halo, d_buffer);
 
-	success = cudaDeviceSynchronize();
+	projection_comm2_unpack_z<<<sizeLocal[1], 128, 0, comm_stream>>>(field, sizeLocalGross[0], sizeLocalGross[1], sizeLocalGross[2], halo, d_buffer2);
+
+	cudaFreeAsync(d_buffer, comm_stream);
+	
+	success = cudaStreamSynchronize(comm_stream);
 
 	if (success != cudaSuccess)
 	{
-		std::cerr << "Error in projection_comm[1/2]_unpack_z: " << cudaGetErrorString(success) << endl;
+		std::cerr << "Error in projection_comm[1/2]_unpack_z: " << cudaGetErrorString(success) << std::endl;
 		throw std::runtime_error("Error in projection_comm[1/2]_unpack_z");
 	}
+
+	cudaStreamDestroy(comm_stream);
 
 	free(buffer);
 }
@@ -1854,7 +1918,19 @@ void projection_T00_project(perfParticles<part_simple, part_simple_info> * pcls,
 	params[0] = a;
 	params[1] = coeff;
 
-	pcls->projectParticles(particle_T00_project_functor(), fields, (phi == nullptr ? 1 : 2), params);
+	Field<Real> ** d_fields;
+	double * d_params;
+
+	cudaMalloc(&d_fields, 2*sizeof(Field<Real>*));
+	cudaMalloc(&d_params, 2*sizeof(double));
+
+	cudaMemcpy(d_fields, fields, 2*sizeof(Field<Real>*), cudaMemcpyDefault);
+	cudaMemcpy(d_params, params, 2*sizeof(double), cudaMemcpyDefault);
+
+	pcls->projectParticles(particle_T00_project_functor(), d_fields, (phi == nullptr ? 1 : 2), d_params);
+
+	cudaFree(d_fields);
+	cudaFree(d_params);
 }
 
 
@@ -2194,7 +2270,19 @@ void projection_T0i_project(perfParticles<part_simple, part_simple_info> * pcls,
 	fields[0] = T0i;
 	fields[1] = phi;
 
-	pcls->projectParticles(particle_T0i_project_functor(), fields, (phi == nullptr ? 1 : 2), &coeff);
+	Field<Real> ** d_fields;
+	double * d_coeff;
+
+	cudaMalloc(&d_fields, 2*sizeof(Field<Real>*));
+	cudaMalloc(&d_coeff, sizeof(double));
+
+	cudaMemcpy(d_fields, fields, 2*sizeof(Field<Real>*), cudaMemcpyDefault);
+	cudaMemcpy(d_coeff, &coeff, sizeof(double), cudaMemcpyDefault);
+
+	pcls->projectParticles(particle_T0i_project_functor(), d_fields, (phi == nullptr ? 1 : 2), d_coeff);
+
+	cudaFree(d_fields);
+	cudaFree(d_coeff);
 }
 
 void projection_T0i_project_Async(perfParticles<part_simple, part_simple_info> * pcls, Field<Real> ** fields, int nfield, double * params)
@@ -2981,7 +3069,19 @@ void projection_Tij_project(perfParticles<part_simple, part_simple_info> * pcls,
 		params[6] = 0.;
 	}
 
-	pcls->projectParticles(particle_Tij_project_functor(), fields, (phi == nullptr ? 1 : 2), params);
+	Field<Real> ** d_fields;
+	double * d_params;
+
+	cudaMalloc(&d_fields, 2*sizeof(Field<Real>*));
+	cudaMalloc(&d_params, 7*sizeof(double));
+
+	cudaMemcpy(d_fields, fields, 2*sizeof(Field<Real>*), cudaMemcpyDefault);
+	cudaMemcpy(d_params, params, 7*sizeof(double), cudaMemcpyDefault);
+
+	pcls->projectParticles(particle_Tij_project_functor(), d_fields, (phi == nullptr ? 1 : 2), d_params);
+
+	cudaFree(d_fields);
+	cudaFree(d_params);
 }
 
 void projection_Tij_project_Async(perfParticles<part_simple, part_simple_info> * pcls, Field<Real> ** fields, int nfield, double * params)
@@ -3287,7 +3387,19 @@ void projection_Ti0_project(perfParticles<part_simple, part_simple_info> * pcls,
 		if (chi != nullptr) nfield++;
 	}
 
-	pcls->projectParticles(particle_Ti0_project_functor(), fields, nfield, &coeff);
+	Field<Real> ** d_fields;
+	double * d_params;
+
+	cudaMalloc(&d_fields, 3*sizeof(Field<Real>*));
+	cudaMalloc(&d_params, sizeof(double));
+
+	cudaMemcpy(d_fields, fields, 3*sizeof(Field<Real>*), cudaMemcpyDefault);
+	cudaMemcpy(d_params, &coeff, sizeof(double), cudaMemcpyDefault);
+
+	pcls->projectParticles(particle_Ti0_project_functor(), d_fields, nfield, d_params);
+
+	cudaFree(d_fields);
+	cudaFree(d_params);
 }
 
 

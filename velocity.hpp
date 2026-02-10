@@ -8,7 +8,7 @@
 // Author: Francesca Lepori (SISSA Trieste & INFN Trieste & Université de Genève)
 // Author: Julian Adamek (Queen Mary University of London & Universität Zürich & ETH Zürich)
 //
-// Last modified: January 2026
+// Last modified: February 2026
 //
 //////////////////////////
 
@@ -141,20 +141,25 @@ void compute_vi_rescaled(cosmology & cosmo, Field<Real> * vi, Field<Real> * sour
 
     Field<Real> * fields[3] = {source, Ti0, vi};
     double params[2] = {a, D1_prime(cosmo, a)/D1_prime(cosmo, a_old)*a/a_old};
+    Field<Real> ** d_fields;
     double * d_params;
 
     cudaMalloc(&d_params, 2 * sizeof(double));
-    cudaMemcpy(d_params, params, 2 * sizeof(double), cudaMemcpyHostToDevice);
+    cudaMalloc(&d_fields, 3 * sizeof(Field<Real> *));
+
+    cudaMemcpy(d_params, params, 2 * sizeof(double), cudaMemcpyDefault);
+    cudaMemcpy(d_fields, fields, 3 * sizeof(Field<Real> *), cudaMemcpyDefault);
 
     int numpts = vi->lattice().sizeLocal(0);
     int block_x = vi->lattice().sizeLocal(1);
     int block_y = vi->lattice().sizeLocal(2);
 
-    lattice_for_each<<<dim3(block_x, block_y), 128>>>(compute_vi_rescaled_functor(), numpts, fields, 3, d_params, nullptr, nullptr);
+    lattice_for_each<<<dim3(block_x, block_y), 128>>>(compute_vi_rescaled_functor(), numpts, d_fields, 3, d_params, nullptr, nullptr);
 
     cudaDeviceSynchronize();
 
     cudaFree(d_params);
+    cudaFree(d_fields);
 }
 
 #endif

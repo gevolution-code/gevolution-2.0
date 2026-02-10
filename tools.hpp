@@ -4,9 +4,9 @@
 // 
 // Collection of analysis tools for gevolution
 //
-// Author: Julian Adamek (Université de Genève & Observatoire de Paris & Queen Mary University of London & Universität Zürich)
+// Author: Julian Adamek (Université de Genève & Observatoire de Paris & Queen Mary University of London & Universität Zürich & ETH Zürich)
 //
-// Last modified: February 2025
+// Last modified: February 2026
 //
 //////////////////////////
 
@@ -424,26 +424,42 @@ struct computeVectorDiagnostics_functor
 	}
 };
 
-void computeVectorDiagnostics(Field<Real> & Bi, Real & mdivB, Real & mcurlB)
+void computeVectorDiagnostics(Field<Real> * Bi, Real & mdivB, Real & mcurlB)
 {
 	//Real b1, b2, b3, b4;
-	const Real linesize = (Real) Bi.lattice().sizeLocal(0);
+	const Real linesize = (Real) Bi->lattice().sizeLocal(0);
 	//Site x(Bi.lattice());
 	
 	//mdivB = 0.;
 	//mcurlB = 0.;
 
-	Field<Real> * fieldptr = &Bi;
+	Field<Real> ** d_fieldptr;
 	double result[2] = { 0., 0. };
 	int reduce[2] = { MAX, MAX };
+	double * d_result;
+	int * d_reduce;
 
-	int numpts = Bi.lattice().sizeLocal(0);
-	int block_x = Bi.lattice().sizeLocal(1);
-	int block_y = Bi.lattice().sizeLocal(2);
+	cudaMalloc((void **) &d_fieldptr, sizeof(Field<Real> *));
+	cudaMalloc((void **) &d_result, 2 * sizeof(double));
+	cudaMalloc((void **) &d_reduce, 2 * sizeof(int));
 
-	lattice_for_each<computeVectorDiagnostics_functor, 2><<<dim3(block_x, block_y), 128>>>(computeVectorDiagnostics_functor(), numpts, &fieldptr, 1, nullptr, result, reduce);
+	cudaMemcpy(d_fieldptr, &Bi, sizeof(Field<Real> *), cudaMemcpyDefault);
+	cudaMemcpy(d_reduce, reduce, 2 * sizeof(int), cudaMemcpyDefault);
+	cudaMemcpy(d_result, result, 2 * sizeof(double), cudaMemcpyDefault);
+
+	int numpts = Bi->lattice().sizeLocal(0);
+	int block_x = Bi->lattice().sizeLocal(1);
+	int block_y = Bi->lattice().sizeLocal(2);
+
+	lattice_for_each<computeVectorDiagnostics_functor, 2><<<dim3(block_x, block_y), 128>>>(computeVectorDiagnostics_functor(), numpts, d_fieldptr, 1, nullptr, d_result, d_reduce);
 
 	cudaDeviceSynchronize();
+
+	cudaMemcpy(result, d_result, 2 * sizeof(double), cudaMemcpyDefault);
+
+	cudaFree(d_fieldptr);
+	cudaFree(d_result);
+	cudaFree(d_reduce);
 
 	parallel.max<double>(result, 2);
 
@@ -500,27 +516,43 @@ struct computeTensorDiagnostics_functor
 	}
 };
 
-void computeTensorDiagnostics(Field<Real> & hij, Real & mdivh, Real & mtraceh, Real & mnormh)
+void computeTensorDiagnostics(Field<Real> * hij, Real & mdivh, Real & mtraceh, Real & mnormh)
 {
 	//Real d1, d2, d3;
-	const Real linesize = (Real) hij.lattice().sizeLocal(0);
-	//Site x(hij.lattice());
+	const Real linesize = (Real) hij->lattice().sizeLocal(0);
+	//Site x(hij->lattice());
 	
 	//mdivh = 0.;
 	//mtraceh = 0.;
 	//mnormh = 0.;
 
-	Field<Real> * fieldptr = &hij;
+	Field<Real> ** d_fieldptr;
 	double result[3] = { 0., 0., 0. };
 	int reduce[3] = { MAX, MAX, MAX };
+	double * d_result;
+	int * d_reduce;
 
-	int numpts = hij.lattice().sizeLocal(0);
-	int block_x = hij.lattice().sizeLocal(1);
-	int block_y = hij.lattice().sizeLocal(2);
+	cudaMalloc((void **) &d_fieldptr, sizeof(Field<Real> *));
+	cudaMalloc((void **) &d_result, 3 * sizeof(double));
+	cudaMalloc((void **) &d_reduce, 3 * sizeof(int));
 
-	lattice_for_each<computeTensorDiagnostics_functor, 3><<<dim3(block_x, block_y), 128>>>(computeTensorDiagnostics_functor(), numpts, &fieldptr, 1, nullptr, result, reduce);
+	cudaMemcpy(d_fieldptr, &hij, sizeof(Field<Real> *), cudaMemcpyDefault);
+	cudaMemcpy(d_reduce, reduce, 3 * sizeof(int), cudaMemcpyDefault);
+	cudaMemcpy(d_result, result, 3 * sizeof(double), cudaMemcpyDefault);
+
+	int numpts = hij->lattice().sizeLocal(0);
+	int block_x = hij->lattice().sizeLocal(1);
+	int block_y = hij->lattice().sizeLocal(2);
+
+	lattice_for_each<computeTensorDiagnostics_functor, 3><<<dim3(block_x, block_y), 128>>>(computeTensorDiagnostics_functor(), numpts, d_fieldptr, 1, nullptr, d_result, d_reduce);
 
 	cudaDeviceSynchronize();
+
+	cudaMemcpy(result, d_result, 3 * sizeof(double), cudaMemcpyDefault);
+
+	cudaFree(d_fieldptr);
+	cudaFree(d_result);
+	cudaFree(d_reduce);
 
 	parallel.max<double>(result, 3);
 

@@ -26,16 +26,16 @@ template <typename part, typename part_info>
 __global__ void count_tracer_particles(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, long * npart, int * npart_row);
 
 template <typename part, typename part_info>
-__global__ void count_tracer_particles(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, lightcone_geometry & lightcone, Real inner, Real outer, Real dtau_old, double vertex[MAX_INTERSECTS][3], int vertexcount, long * npart, int * npart_row, int * npart_checkID_row);
+__global__ void count_tracer_particles(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, const lightcone_geometry lightcone, Real inner, Real outer, Real dtau_old, const double (*vertex)[3], int vertexcount, long * npart, int * npart_row, int * npart_checkID_row);
 
 template <typename part, typename part_info>
-__global__ void buffer_tracer_IDs(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, lightcone_geometry & lightcone, Real inner, Real outer, Real dtau_old, double vertex[MAX_INTERSECTS][3], int vertexcount, long * IDs, long row_offset, unsigned long long int * buffer_count);
+__global__ void buffer_tracer_IDs(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, const lightcone_geometry lightcone, Real inner, Real outer, Real dtau_old, const double (*vertex)[3], int vertexcount, long * IDs, long row_offset, unsigned long long int * buffer_count);
 
 template <typename part, typename part_info>
 __global__ void buffer_tracer_particles(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, double dtau_pos, double dtau_vel, double a, double boxsize, Field<Real> * phi, float * posdata, float * veldata, long * IDs, long row_offset, unsigned long long int * buffer_count);
 
 template <typename part, typename part_info, int IDlog_scatter = 0>
-__global__ void buffer_tracer_particles(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, lightcone_geometry & lightcone, Real dist, Real inner, Real outer, double dtau, double dtau_old, double a, double dadtau, double boxsize, Real * domain, Field<Real> * phi, double vertex[MAX_INTERSECTS][3], int vertexcount, float * posdata, float * veldata, long * IDs, unsigned char * loginfo, long row_offset, unsigned long long int * buffer_count1, unsigned long long int * buffer_count2);
+__global__ void buffer_tracer_particles(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, const lightcone_geometry lightcone, Real dist, Real inner, Real outer, double dtau, double dtau_old, double a, double dadtau, double boxsize, Real * domain, Field<Real> * phi, const double (*vertex)[3], int vertexcount, float * posdata, float * veldata, long * IDs, unsigned char * loginfo, long row_offset, unsigned long long int * buffer_count1, unsigned long long int * buffer_count2);
 
 template <typename part, typename part_info>
 __global__ void add_particles(perfParticles_gevolution<part, part_info> * pcl, float * posdata, float * veldata, void * IDs, uint32_t count, unsigned long long int * buffer_idx);
@@ -66,16 +66,16 @@ class perfParticles_gevolution: public perfParticles<part, part_info>
 		friend __global__ void count_tracer_particles(perfParticles_gevolution<part2, part_info2> * pcl, int tracer_factor, long * npart, int * npart_row);
 
 		template <typename part2, typename part_info2>
-		friend __global__ void count_tracer_particles(perfParticles_gevolution<part2, part_info2> * pcl, int tracer_factor, lightcone_geometry & lightcone, Real inner, Real outer, Real dtau_old, double vertex[MAX_INTERSECTS][3], int vertexcount, long * npart, int * npart_row, int * npart_checkID_row);
+		friend __global__ void count_tracer_particles(perfParticles_gevolution<part2, part_info2> * pcl, int tracer_factor, const lightcone_geometry lightcone, Real inner, Real outer, Real dtau_old, const double (*vertex)[3], int vertexcount, long * npart, int * npart_row, int * npart_checkID_row);
 
 		template <typename part2, typename part_info2>
-		friend __global__ void buffer_tracer_IDs(perfParticles_gevolution<part2, part_info2> * pcl, int tracer_factor, lightcone_geometry & lightcone, Real inner, Real outer, Real dtau_old, double vertex[MAX_INTERSECTS][3], int vertexcount, long * IDs, long row_offset, unsigned long long int * buffer_count);
+		friend __global__ void buffer_tracer_IDs(perfParticles_gevolution<part2, part_info2> * pcl, int tracer_factor, const lightcone_geometry lightcone, Real inner, Real outer, Real dtau_old, const double (*vertex)[3], int vertexcount, long * IDs, long row_offset, unsigned long long int * buffer_count);
 
 		template <typename part2, typename part_info2>
 		friend __global__ void buffer_tracer_particles(perfParticles_gevolution<part2, part_info2> * pcl, int tracer_factor, double dtau_pos, double dtau_vel, double a, double boxsize, Field<Real> * phi, float * posdata, float * veldata, long * IDs, long row_offset, unsigned long long int * buffer_count);
 
 		template <typename part2, typename part_info2, int IDlog_scatter>
-		friend __global__ void buffer_tracer_particles(perfParticles_gevolution<part2, part_info2> * pcl, int tracer_factor, lightcone_geometry & lightcone, Real dist, Real inner, Real outer, double dtau, double dtau_old, double a, double dadtau, double boxsize, Real * domain, Field<Real> * phi, double vertex[MAX_INTERSECTS][3], int vertexcount, float * posdata, float * veldata, long * IDs, unsigned char * loginfo, long row_offset, unsigned long long int * buffer_count1, unsigned long long int * buffer_count2);
+		friend __global__ void buffer_tracer_particles(perfParticles_gevolution<part2, part_info2> * pcl, int tracer_factor, const lightcone_geometry lightcone, Real dist, Real inner, Real outer, double dtau, double dtau_old, double a, double dadtau, double boxsize, Real * domain, Field<Real> * phi, const double (*vertex)[3], int vertexcount, float * posdata, float * veldata, long * IDs, unsigned char * loginfo, long row_offset, unsigned long long int * buffer_count1, unsigned long long int * buffer_count2);
 
 		template <typename part2, typename part_info2>
 		friend __global__ void add_particles(perfParticles_gevolution<part2, part_info2> * pcl, float * posdata, float * veldata, void * IDs, uint32_t count, unsigned long long int * buffer_idx);
@@ -467,29 +467,55 @@ __host__ __device__ void perfParticles_gevolution<part,part_info>::bufferTracerP
 template <typename part, typename part_info>
 void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadget2_header & hdr, const int tracer_factor, double dtau_pos, double dtau_vel, Field<Real> * phi)
 {
-	float * posdata;
-	float * veldata;
-	long * IDs;
+	float * posdata = nullptr;
+	float * veldata = nullptr;
+	long * IDs = nullptr;
+	float * d_posdata = nullptr;
+	float * d_veldata = nullptr;
+	long * d_IDs = nullptr;
 	long count, npart;
 	int row_start = 0, row_count;
 	uint32_t blocksize;
 	unsigned long long int buffer_count;
-	int * npart_row;
-	long * d_npart;
-	int * d_npart_row;
-	unsigned long long int * d_buffer_count;
+	int * npart_row = nullptr;
+	long * d_npart = nullptr;
+	int * d_npart_row = nullptr;
+	unsigned long long int * d_buffer_count = nullptr;
 
-	posdata = (float *) malloc(3 * sizeof(float) * PCLBUFFER);
-	veldata = (float *) malloc(3 * sizeof(float) * PCLBUFFER);
-	IDs = (long *) malloc(sizeof(int64_t) * PCLBUFFER);
+	cudaStream_t save_stream;
 
-	npart_row = (int *) malloc(sizeof(int) * this->num_row_buffers_);
+	auto success = cudaStreamCreateWithFlags(&save_stream, cudaStreamNonBlocking);
+	if (success != cudaSuccess)
+	{
+		std::cerr << "CUDA stream creation failed: " << cudaGetErrorString(success) << std::endl;
+		throw std::runtime_error("Error in CUDA stream creation for saveGadget2");
+	}
 
-	cudaMalloc(&d_npart, sizeof(long));
-	cudaMalloc(&d_npart_row, sizeof(int) * this->num_row_buffers_);
-	cudaMalloc(&d_buffer_count, sizeof(unsigned long long int));
+	// these need to use pinned memory
+	cudaHostAlloc(&posdata, 3 * sizeof(float) * PCLBUFFER, cudaHostAllocDefault);
+	cudaHostAlloc(&veldata, 3 * sizeof(float) * PCLBUFFER, cudaHostAllocDefault);
+	cudaHostAlloc(&IDs, sizeof(int64_t) * PCLBUFFER, cudaHostAllocDefault);
 
-	if (posdata == NULL || veldata == NULL || IDs == NULL)
+	// device buffers
+	cudaMallocAsync(&d_posdata, 3 * sizeof(float) * PCLBUFFER, save_stream);
+	cudaMallocAsync(&d_veldata, 3 * sizeof(float) * PCLBUFFER, save_stream);
+	cudaMallocAsync(&d_IDs, sizeof(int64_t) * PCLBUFFER, save_stream);
+
+	cudaHostAlloc(&npart_row, sizeof(int) * this->num_row_buffers_, cudaHostAllocDefault);
+
+	cudaMallocAsync(&d_npart, sizeof(long), save_stream);
+	cudaMallocAsync(&d_npart_row, sizeof(int) * this->num_row_buffers_, save_stream);
+	cudaMallocAsync(&d_buffer_count, sizeof(unsigned long long int), save_stream);
+
+	success = cudaStreamSynchronize(save_stream);
+
+	if (success != cudaSuccess)
+	{
+		std::cerr << "CUDA stream synchronization failed: " << cudaGetErrorString(success) << std::endl;
+		throw std::runtime_error("Error in CUDA stream synchronization for saveGadget2");
+	}
+
+	if (posdata == nullptr || veldata == nullptr || IDs == nullptr || d_posdata == nullptr || d_veldata == nullptr || d_IDs == nullptr || npart_row == nullptr || d_npart == nullptr || d_npart_row == nullptr || d_buffer_count == nullptr)
 	{
 		throw std::runtime_error("Error allocating memory for particle buffers");
 	}
@@ -503,21 +529,21 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 		npart_row[row] = 0;
 	}
 
-	cudaMemcpy(d_npart, &npart, sizeof(long), cudaMemcpyHostToDevice);
-	cudaMemcpy(d_npart_row, npart_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyHostToDevice);
+	cudaMemcpyAsync(d_npart, &npart, sizeof(long), cudaMemcpyHostToDevice, save_stream);
+	cudaMemcpyAsync(d_npart_row, npart_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyHostToDevice, save_stream);
 	
 	// count particles
-	count_tracer_particles<part, part_info><<<this->num_row_buffers_, 128>>>(this, tracer_factor, d_npart, d_npart_row);
+	count_tracer_particles<part, part_info><<<this->num_row_buffers_, 128, 0, save_stream>>>(this, tracer_factor, d_npart, d_npart_row);
 
-	auto success = cudaDeviceSynchronize();
+	cudaMemcpyAsync(&npart, d_npart, sizeof(long), cudaMemcpyDeviceToHost, save_stream);
+	cudaMemcpyAsync(npart_row, d_npart_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyDeviceToHost, save_stream);
+
+	success = cudaStreamSynchronize(save_stream);
 
 	if (success != cudaSuccess)
 	{
 		throw std::runtime_error("CUDA error in count_tracer_particles");
 	}
-
-	cudaMemcpy(&npart, d_npart, sizeof(long), cudaMemcpyDeviceToHost);
-	cudaMemcpy(npart_row, d_npart_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyDeviceToHost);
 
 	nvtxRangePop();
 
@@ -581,36 +607,62 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 
 			if (count > PCLBUFFER)
 			{
-				float * new_posdata = (float *) realloc(posdata, 3 * sizeof(float) * count);
-				float * new_veldata = (float *) realloc(veldata, 3 * sizeof(float) * count);
-				long * new_IDs = (long *) realloc(IDs, sizeof(int64_t) * count);
+				float * new_d_posdata = nullptr;
+				float * new_d_veldata = nullptr;
+				long * new_d_IDs = nullptr;
 
-				if (new_posdata == NULL || new_veldata == NULL || new_IDs == NULL)
+				cudaFreeHost(posdata);
+				cudaFreeHost(veldata);
+				cudaFreeHost(IDs);
+
+				cudaHostAlloc(&posdata, 3 * sizeof(float) * count, cudaHostAllocDefault);
+				cudaHostAlloc(&veldata, 3 * sizeof(float) * count, cudaHostAllocDefault);
+				cudaHostAlloc(&IDs, sizeof(int64_t) * count, cudaHostAllocDefault);
+
+				cudaMallocAsync(&new_d_posdata, 3 * sizeof(float) * count, save_stream);
+				cudaMallocAsync(&new_d_veldata, 3 * sizeof(float) * count, save_stream);
+				cudaMallocAsync(&new_d_IDs, sizeof(int64_t) * count, save_stream);
+
+				cudaMemcpyAsync(new_d_posdata, d_posdata, 3 * sizeof(float) * PCLBUFFER, cudaMemcpyDeviceToDevice, save_stream);
+				cudaMemcpyAsync(new_d_veldata, d_veldata, 3 * sizeof(float) * PCLBUFFER, cudaMemcpyDeviceToDevice, save_stream);
+				cudaMemcpyAsync(new_d_IDs, d_IDs, sizeof(int64_t) * PCLBUFFER, cudaMemcpyDeviceToDevice, save_stream);
+
+				cudaFreeAsync(d_posdata, save_stream);
+				cudaFreeAsync(d_veldata, save_stream);
+				cudaFreeAsync(d_IDs, save_stream);
+
+				d_posdata = new_d_posdata;
+				d_veldata = new_d_veldata;
+				d_IDs = new_d_IDs;
+
+				cudaMemcpyAsync(posdata, d_posdata, 3 * sizeof(float) * count, cudaMemcpyDeviceToHost, save_stream);
+				cudaMemcpyAsync(veldata, d_veldata, 3 * sizeof(float) * count, cudaMemcpyDeviceToHost, save_stream);
+				cudaMemcpyAsync(IDs, d_IDs, sizeof(int64_t) * count, cudaMemcpyDeviceToHost, save_stream);
+
+				success = cudaStreamSynchronize(save_stream);
+
+				if (success != cudaSuccess)
 				{
-					throw std::runtime_error("Error reallocating memory for particle buffers");
+					throw std::runtime_error("CUDA error in resizing buffers for saveGadget2");
 				}
-
-				posdata = new_posdata;
-				veldata = new_veldata;
-				IDs = new_IDs;
 			}
 			
 			if (count > 0)
 			{
 				nvtxRangePushA("buffer particles");
 				//buffer_count = 0;
-				cudaMemset(d_buffer_count, 0, sizeof(unsigned long long int));
+				cudaMemsetAsync(d_buffer_count, 0, sizeof(unsigned long long int), save_stream);
 
-				buffer_tracer_particles<<<row_count, 128>>>(this, tracer_factor, dtau_pos, dtau_vel, hdr.time, hdr.BoxSize, phi, posdata, veldata, IDs, row_start, d_buffer_count);
+				buffer_tracer_particles<<<row_count, 128, 0, save_stream>>>(this, tracer_factor, dtau_pos, dtau_vel, hdr.time, hdr.BoxSize, phi, posdata, veldata, IDs, row_start, d_buffer_count);
 
-				success = cudaDeviceSynchronize();
+				success = cudaStreamSynchronize(save_stream);
 
 				if (success != cudaSuccess)
 				{
 					throw std::runtime_error("CUDA error in buffer_tracer_particles");
 				}
 
-				cudaMemcpy(&buffer_count, d_buffer_count, sizeof(unsigned long long int), cudaMemcpyDeviceToHost);
+				cudaMemcpyAsync(&buffer_count, d_buffer_count, sizeof(unsigned long long int), cudaMemcpyDeviceToHost, save_stream);
 				nvtxRangePop();
 
 				nvtxRangePushA("write particles to disk");
@@ -696,32 +748,60 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 
 			if (count > PCLBUFFER)
 			{
-				float * new_posdata = (float *) realloc(posdata, 3 * sizeof(float) * count);
-				float * new_veldata = (float *) realloc(veldata, 3 * sizeof(float) * count);
-				long * new_IDs = (long *) realloc(IDs, sizeof(int64_t) * count);
+				float * new_d_posdata = nullptr;
+				float * new_d_veldata = nullptr;
+				long * new_d_IDs = nullptr;
 
-				if (new_posdata == NULL || new_veldata == NULL || new_IDs == NULL)
+				cudaFreeHost(posdata);
+				cudaFreeHost(veldata);
+				cudaFreeHost(IDs);
+
+				cudaHostAlloc(&posdata, 3 * sizeof(float) * count, cudaHostAllocDefault);
+				cudaHostAlloc(&veldata, 3 * sizeof(float) * count, cudaHostAllocDefault);
+				cudaHostAlloc(&IDs, sizeof(int64_t) * count, cudaHostAllocDefault);
+
+				cudaMallocAsync(&new_d_posdata, 3 * sizeof(float) * count, save_stream);
+				cudaMallocAsync(&new_d_veldata, 3 * sizeof(float) * count, save_stream);
+				cudaMallocAsync(&new_d_IDs, sizeof(int64_t) * count, save_stream);
+
+				cudaMemcpyAsync(new_d_posdata, d_posdata, 3 * sizeof(float) * PCLBUFFER, cudaMemcpyDeviceToDevice, save_stream);
+				cudaMemcpyAsync(new_d_veldata, d_veldata, 3 * sizeof(float) * PCLBUFFER, cudaMemcpyDeviceToDevice, save_stream);
+				cudaMemcpyAsync(new_d_IDs, d_IDs, sizeof(int64_t) * PCLBUFFER, cudaMemcpyDeviceToDevice, save_stream);
+
+				cudaFreeAsync(d_posdata, save_stream);
+				cudaFreeAsync(d_veldata, save_stream);
+				cudaFreeAsync(d_IDs, save_stream);
+
+				d_posdata = new_d_posdata;
+				d_veldata = new_d_veldata;
+				d_IDs = new_d_IDs;
+
+				cudaMemcpyAsync(posdata, d_posdata, 3 * sizeof(float) * count, cudaMemcpyDeviceToHost, save_stream);
+				cudaMemcpyAsync(veldata, d_veldata, 3 * sizeof(float) * count, cudaMemcpyDeviceToHost, save_stream);
+				cudaMemcpyAsync(IDs, d_IDs, sizeof(int64_t) * count, cudaMemcpyDeviceToHost, save_stream);
+
+				success = cudaStreamSynchronize(save_stream);
+
+				if (success != cudaSuccess)
 				{
-					throw std::runtime_error("Error reallocating memory for particle buffers");
+					throw std::runtime_error("CUDA error in resizing buffers for saveGadget2");
 				}
-
-				posdata = new_posdata;
-				veldata = new_veldata;
-				IDs = new_IDs;
 			}
 			
 			//buffer_count = 0;
-			cudaMemset(d_buffer_count, 0, sizeof(unsigned long long int));
+			cudaMemsetAsync(d_buffer_count, 0, sizeof(unsigned long long int), save_stream);
 
-			buffer_tracer_particles<<<row_count, 128>>>(this, tracer_factor, dtau_pos, dtau_vel, hdr.time, hdr.BoxSize, phi, posdata, veldata, IDs, row_start, d_buffer_count);
+			buffer_tracer_particles<<<row_count, 128, 0, save_stream>>>(this, tracer_factor, dtau_pos, dtau_vel, hdr.time, hdr.BoxSize, phi, posdata, veldata, IDs, row_start, d_buffer_count);
 
-			success = cudaDeviceSynchronize();
+			cudaMemcpyAsync(&buffer_count, d_buffer_count, sizeof(unsigned long long int), cudaMemcpyDeviceToHost, save_stream);
+
+			success = cudaStreamSynchronize(save_stream);
 
 			if (success != cudaSuccess)
 			{
 				throw std::runtime_error("CUDA error in buffer_tracer_particles");
 			}
-			cudaMemcpy(&buffer_count, d_buffer_count, sizeof(unsigned long long int), cudaMemcpyDeviceToHost);
+			
 			nvtxRangePop();
 
 			nvtxRangePushA("write particles to disk");
@@ -743,14 +823,21 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 		fclose(outfile);
 	}
 
-	free(posdata);
-	free(veldata);
-	free(IDs);
-	free(npart_row);
+	cudaFreeHost(posdata);
+	cudaFreeHost(veldata);
+	cudaFreeHost(IDs);
+	cudaFreeHost(npart_row);
 
-	cudaFree(d_npart);
-	cudaFree(d_npart_row);
-	cudaFree(d_buffer_count);
+	cudaFreeAsync(d_posdata, save_stream);
+	cudaFreeAsync(d_veldata, save_stream);
+	cudaFreeAsync(d_IDs, save_stream);
+
+	cudaFreeAsync(d_npart, save_stream);
+	cudaFreeAsync(d_npart_row, save_stream);
+	cudaFreeAsync(d_buffer_count, save_stream);
+
+	cudaStreamSynchronize(save_stream);
+	cudaStreamDestroy(save_stream);
 }
 
 
@@ -1108,7 +1195,7 @@ void Particles_gevolution<part,part_info,part_dataType>::saveGadget2(string file
 
 // CUDA kernel to count particles to be written
 template <typename part, typename part_info>
-__global__ void count_tracer_particles(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, lightcone_geometry & lightcone, Real inner, Real outer, Real dtau_old, double vertex[MAX_INTERSECTS][3], int vertexcount, long * npart, int * npart_row, int * npart_checkID_row)
+__global__ void count_tracer_particles(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, const lightcone_geometry lightcone, Real inner, Real outer, Real dtau_old, const double (*vertex)[3], int vertexcount, long * npart, int * npart_row, int * npart_checkID_row)
 {
 	int row = blockIdx.x;
 	int thread_id = threadIdx.x;
@@ -1187,7 +1274,7 @@ __global__ void count_tracer_particles(perfParticles_gevolution<part, part_info>
 
 // CUDA kernel to write particle IDs to buffers
 template <typename part, typename part_info>
-__global__ void buffer_tracer_IDs(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, lightcone_geometry & lightcone, Real inner, Real outer, Real dtau_old, double vertex[MAX_INTERSECTS][3], int vertexcount, long * IDs, long row_offset, unsigned long long int * buffer_count)
+__global__ void buffer_tracer_IDs(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, const lightcone_geometry lightcone, Real inner, Real outer, Real dtau_old, const double (*vertex)[3], int vertexcount, long * IDs, long row_offset, unsigned long long int * buffer_count)
 {
 	int row = blockIdx.x + row_offset;
 	int thread_id = threadIdx.x;
@@ -1218,7 +1305,7 @@ __global__ void buffer_tracer_IDs(perfParticles_gevolution<part, part_info> * pc
 
 // CUDA kernel to write particles to buffers
 template <typename part, typename part_info, int IDlog_scatter>
-__global__ void buffer_tracer_particles(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, lightcone_geometry & lightcone, Real dist, Real inner, Real outer, double dtau, double dtau_old, double a, double dadtau, double boxsize, Real * domain, Field<Real> * phi, double vertex[MAX_INTERSECTS][3], int vertexcount, float * posdata, float * veldata, long * IDs, unsigned char * loginfo, long row_offset, unsigned long long int * buffer_count1, unsigned long long int * buffer_count2)
+__global__ void buffer_tracer_particles(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, const lightcone_geometry lightcone, Real dist, Real inner, Real outer, double dtau, double dtau_old, double a, double dadtau, double boxsize, Real * domain, Field<Real> * phi, const double (*vertex)[3], int vertexcount, float * posdata, float * veldata, long * IDs, unsigned char * loginfo, long row_offset, unsigned long long int * buffer_count1, unsigned long long int * buffer_count2)
 {
 	int row = blockIdx.x + row_offset;
 	int thread_id = threadIdx.x;
@@ -1310,10 +1397,14 @@ template <typename part, typename part_info>
 template <int IDlog_scatter>
 void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadget2_header & hdr, lightcone_geometry & lightcone, double dist, double dtau, double dtau_old, double dadtau, double vertex[MAX_INTERSECTS][3], const int vertexcount, set<long> & IDbacklog, vector<long> * IDprelog, Field<Real> * phi, const int tracer_factor)
 {
-	float * posdata;
-	float * veldata;
-	long * IDs;
-	unsigned char * loginfo;
+	float * posdata = nullptr;
+	float * veldata = nullptr;
+	long * IDs = nullptr;
+	float * d_posdata = nullptr;
+	float * d_veldata = nullptr;
+	long * d_IDs = nullptr;
+	unsigned char * loginfo = nullptr;
+	unsigned char * d_loginfo = nullptr;
 	long count, npart, reject;
 	int row_start = 0, row_count;
 	MPI_File outfile;
@@ -1324,22 +1415,34 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 	int * npart_row;
 	int * npart_checkID_row;
 	Real domain[4];
+	Real * d_domain;
 	Real inner = dist - 0.5 * dtau;
 	Real outer = dist + (0.5 + LIGHTCONE_IDCHECK_ZONE) * dtau_old;
-	long * d_npart;
-	unsigned long long int * d_buffer_count1;
-	unsigned long long int * d_buffer_count2;
-	int * d_npart_row;
-	int * d_npart_checkID_row;
+	long * d_npart = nullptr;
+	unsigned long long int * d_buffer_count1 = nullptr;
+	unsigned long long int * d_buffer_count2 = nullptr;
+	int * d_npart_row = nullptr;
+	int * d_npart_checkID_row = nullptr;
+	double (* d_vertex)[3] = nullptr;
 
-	npart_row = (int *) malloc(sizeof(int) * this->num_row_buffers_);
-	npart_checkID_row = (int *) malloc(sizeof(int) * this->num_row_buffers_);
+	cudaStream_t save_stream;
 
-	cudaMalloc((void **) &d_npart, sizeof(long));
-	cudaMalloc((void **) &d_buffer_count1, sizeof(unsigned long long int));
-	cudaMalloc((void **) &d_buffer_count2, sizeof(unsigned long long int));
-	cudaMalloc((void **) &d_npart_row, sizeof(int) * this->num_row_buffers_);
-	cudaMalloc((void **) &d_npart_checkID_row, sizeof(int) * this->num_row_buffers_);
+	auto success = cudaStreamCreateWithFlags(&save_stream, cudaStreamNonBlocking);
+	if (success != cudaSuccess)
+	{
+		std::cerr << "CUDA stream creation failed: " << cudaGetErrorString(success) << std::endl;
+		throw std::runtime_error("Error in CUDA stream creation for saveGadget2");
+	}
+
+	cudaHostAlloc(&npart_row, sizeof(int) * this->num_row_buffers_, cudaHostAllocDefault);
+	cudaHostAlloc(&npart_checkID_row, sizeof(int) * this->num_row_buffers_, cudaHostAllocDefault);
+
+	cudaMallocAsync((void **) &d_npart, sizeof(long), save_stream);
+	cudaMallocAsync((void **) &d_buffer_count1, sizeof(unsigned long long int), save_stream);
+	cudaMallocAsync((void **) &d_buffer_count2, sizeof(unsigned long long int), save_stream);
+	cudaMallocAsync((void **) &d_npart_row, sizeof(int) * this->num_row_buffers_, save_stream);
+	cudaMallocAsync((void **) &d_npart_checkID_row, sizeof(int) * this->num_row_buffers_, save_stream);
+	cudaMallocAsync((void **) &d_vertex, sizeof(double) * MAX_INTERSECTS * 3, save_stream);
 
 	if (hdr.num_files != 1)
 	{
@@ -1352,9 +1455,16 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 	domain[2] = this->coordSkip_[0] * this->boxSize_[0] / this->lat_size_[0];
 	domain[3] = domain[2] + this->lat_size_local_[2] * this->boxSize_[0] / this->lat_size_[0];
 
-	IDs = (long *) malloc(sizeof(int64_t) * PCLBUFFER);
+	cudaHostAlloc(&IDs, sizeof(int64_t) * PCLBUFFER, cudaHostAllocDefault);
 
-	if (IDs == NULL)
+	cudaMallocAsync((void **) &d_IDs, sizeof(int64_t) * PCLBUFFER, save_stream);
+	cudaMallocAsync((void **) &d_domain, sizeof(Real) * 4, save_stream);
+	cudaMemcpyAsync(d_domain, domain, sizeof(Real) * 4, cudaMemcpyHostToDevice, save_stream);
+	cudaMemcpyAsync(d_vertex, vertex, sizeof(double) * MAX_INTERSECTS * 3, cudaMemcpyHostToDevice, save_stream);
+
+	success = cudaStreamSynchronize(save_stream);
+
+	if (IDs == nullptr || success != cudaSuccess)
 	{
 		throw std::runtime_error("Error allocating memory for particle IDs");
 	}
@@ -1369,27 +1479,33 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 		npart_checkID_row[row] = 0;
 	}
 
-	cudaMemcpy(d_npart, &npart, sizeof(long), cudaMemcpyHostToDevice);
-	cudaMemcpy(d_npart_row, npart_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyHostToDevice);
-	cudaMemcpy(d_npart_checkID_row, npart_checkID_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyHostToDevice);
+	cudaMemcpyAsync(d_npart, &npart, sizeof(long), cudaMemcpyHostToDevice, save_stream);
+	cudaMemcpyAsync(d_npart_row, npart_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyHostToDevice, save_stream);
+	cudaMemcpyAsync(d_npart_checkID_row, npart_checkID_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyHostToDevice, save_stream);
 
 	// count particles
-	count_tracer_particles<part, part_info><<<this->num_row_buffers_, 128>>>(this, tracer_factor, lightcone, inner, outer, dtau_old, vertex, vertexcount, d_npart, d_npart_row, d_npart_checkID_row);
+	count_tracer_particles<part, part_info><<<this->num_row_buffers_, 128, 0, save_stream>>>(this, tracer_factor, lightcone, inner, outer, dtau_old, d_vertex, vertexcount, d_npart, d_npart_row, d_npart_checkID_row);
 
-	auto success = cudaDeviceSynchronize();
+	success = cudaStreamSynchronize(save_stream);
 
 	if (success != cudaSuccess)
 	{
 		throw std::runtime_error("CUDA error in count_tracer_particles");
 	}
 
-	cudaMemcpy(&npart, d_npart, sizeof(long), cudaMemcpyDeviceToHost);
-	cudaMemcpy(npart_row, d_npart_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyDeviceToHost);
-	cudaMemcpy(npart_checkID_row, d_npart_checkID_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyDeviceToHost);
+	cudaMemcpyAsync(&npart, d_npart, sizeof(long), cudaMemcpyDeviceToHost, save_stream);
+	cudaMemcpyAsync(npart_row, d_npart_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyDeviceToHost, save_stream);
+	cudaMemcpyAsync(npart_checkID_row, d_npart_checkID_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyDeviceToHost, save_stream);
 
-	cudaFree(d_npart);
-	cudaFree(d_npart_row);
-	cudaFree(d_npart_checkID_row);
+	cudaFreeAsync(d_npart, save_stream);
+	cudaFreeAsync(d_npart_row, save_stream);
+	cudaFreeAsync(d_npart_checkID_row, save_stream);
+
+	success = cudaStreamSynchronize(save_stream);
+	if (success != cudaSuccess)
+	{
+		throw std::runtime_error("CUDA error after counting particles in saveGadget2");
+	}
 
 	// first loop: collect IDs to be checked against IDbacklog
 	while (row_start < this->num_row_buffers_)
@@ -1405,31 +1521,53 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 
 		if (count > PCLBUFFER)
 		{
-			long * new_IDs = (long *) realloc(IDs, sizeof(int64_t) * count);
+			cudaFreeHost(IDs);
+			cudaHostAlloc(&IDs, sizeof(int64_t) * count, cudaHostAllocDefault);
 
-			if (new_IDs == NULL)
+			long * d_new_IDs;
+
+			cudaMallocAsync((void **) &d_new_IDs, sizeof(int64_t) * count, save_stream);
+
+			cudaMemcpyAsync(d_new_IDs, d_IDs, sizeof(int64_t) * PCLBUFFER, cudaMemcpyDefault, save_stream);
+
+			cudaFreeAsync(d_IDs, save_stream);
+
+			d_IDs = d_new_IDs;
+
+			cudaMemcpyAsync(d_IDs, IDs, sizeof(int64_t) * PCLBUFFER, cudaMemcpyHostToDevice, save_stream);
+
+			success = cudaStreamSynchronize(save_stream);
+
+			if (success != cudaSuccess)
 			{
-				throw std::runtime_error("Error reallocating memory for particle IDs");
+				throw std::runtime_error("CUDA error reallocating ID buffer in saveGadget2");
 			}
-
-			IDs = new_IDs;
 		}
 
 		if (count > 0)
 		{
 			//buffer_count1 = 0;
-			cudaMemset(d_buffer_count1, 0, sizeof(unsigned long long int));
+			cudaMemsetAsync(d_buffer_count1, 0, sizeof(unsigned long long int), save_stream);
 
-			buffer_tracer_IDs<part, part_info><<<row_count, 128>>>(this, tracer_factor, lightcone, inner, outer, dtau_old, vertex, vertexcount, IDs, row_start, d_buffer_count1);
+			buffer_tracer_IDs<part, part_info><<<row_count, 128, 0, save_stream>>>(this, tracer_factor, lightcone, inner, outer, dtau_old, d_vertex, vertexcount, d_IDs, row_start, d_buffer_count1);
 
-			success = cudaDeviceSynchronize();
+			cudaMemcpyAsync(&buffer_count1, d_buffer_count1, sizeof(unsigned long long int), cudaMemcpyDeviceToHost, save_stream);
+
+			success = cudaStreamSynchronize(save_stream);
 
 			if (success != cudaSuccess)
 			{
 				throw std::runtime_error("CUDA error in buffer_tracer_IDs");
 			}
 
-			cudaMemcpy(&buffer_count1, d_buffer_count1, sizeof(unsigned long long int), cudaMemcpyDeviceToHost);
+			cudaMemcpyAsync(IDs, d_IDs, sizeof(int64_t) * buffer_count1, cudaMemcpyDeviceToHost, save_stream);
+
+			success = cudaStreamSynchronize(save_stream);
+
+			if (success != cudaSuccess)
+			{
+				throw std::runtime_error("CUDA error copying ID buffer to host in saveGadget2");
+			}
 
 			// check IDs against IDbacklog
 			reject = 0;
@@ -1501,11 +1639,17 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 			MPI_File_write_at(outfile, offset_ID + blocksize, &blocksize, 1, MPI_UNSIGNED, &status);
 		}
 
-		posdata = (float *) malloc(3 * sizeof(float) * PCLBUFFER);
-		veldata = (float *) malloc(3 * sizeof(float) * PCLBUFFER);
-		loginfo = (unsigned char *) malloc(PCLBUFFER);
+		cudaHostAlloc(&posdata, 3 * sizeof(float) * PCLBUFFER, cudaHostAllocDefault);
+		cudaHostAlloc(&veldata, 3 * sizeof(float) * PCLBUFFER, cudaHostAllocDefault);
+		cudaHostAlloc(&loginfo, PCLBUFFER * sizeof(unsigned char), cudaHostAllocDefault);
 
-		if (posdata == NULL || veldata == NULL || loginfo == NULL)
+		cudaMallocAsync((void **) &d_posdata, 3 * sizeof(float) * PCLBUFFER, save_stream);
+		cudaMallocAsync((void **) &d_veldata, 3 * sizeof(float) * PCLBUFFER, save_stream);
+		cudaMallocAsync((void **) &d_loginfo, PCLBUFFER * sizeof(unsigned char), save_stream);
+
+		success = cudaStreamSynchronize(save_stream);
+
+		if (posdata == nullptr || veldata == nullptr || loginfo == nullptr || success != cudaSuccess)
 		{
 			throw std::runtime_error("Error allocating memory for particle buffers");
 		}
@@ -1529,41 +1673,83 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 
 			if (count > PCLBUFFER)
 			{
-				float * new_posdata = (float *) realloc(posdata, 3 * sizeof(float) * count);
-				float * new_veldata = (float *) realloc(veldata, 3 * sizeof(float) * count);
-				long * new_IDs = (long *) realloc(IDs, sizeof(int64_t) * count);
-				unsigned char * new_loginfo = (unsigned char *) realloc(loginfo, count);
+				float * new_d_posdata = nullptr;
+				float * new_d_veldata = nullptr;
+				long * new_d_IDs = nullptr;
+				unsigned char * new_d_loginfo = nullptr;
 
-				if (new_posdata == NULL || new_veldata == NULL || new_IDs == NULL || new_loginfo == NULL)
+				cudaFreeHost(posdata);
+				cudaFreeHost(veldata);
+				cudaFreeHost(IDs);
+				cudaFreeHost(loginfo);
+
+				cudaHostAlloc(&posdata, 3 * sizeof(float) * count, cudaHostAllocDefault);
+				cudaHostAlloc(&veldata, 3 * sizeof(float) * count, cudaHostAllocDefault);
+				cudaHostAlloc(&IDs, sizeof(int64_t) * count, cudaHostAllocDefault);
+				cudaHostAlloc(&loginfo, count * sizeof(unsigned char), cudaHostAllocDefault);
+
+				cudaMallocAsync(&new_d_posdata, 3 * sizeof(float) * count, save_stream);
+				cudaMallocAsync(&new_d_veldata, 3 * sizeof(float) * count, save_stream);
+				cudaMallocAsync(&new_d_IDs, sizeof(int64_t) * count, save_stream);
+				cudaMallocAsync(&new_d_loginfo, count * sizeof(unsigned char), save_stream);
+
+				cudaMemcpyAsync(new_d_posdata, d_posdata, 3 * sizeof(float) * PCLBUFFER, cudaMemcpyDeviceToDevice, save_stream);
+				cudaMemcpyAsync(new_d_veldata, d_veldata, 3 * sizeof(float) * PCLBUFFER, cudaMemcpyDeviceToDevice, save_stream);
+				cudaMemcpyAsync(new_d_IDs, d_IDs, sizeof(int64_t) * PCLBUFFER, cudaMemcpyDeviceToDevice, save_stream);
+				cudaMemcpyAsync(new_d_loginfo, d_loginfo, PCLBUFFER * sizeof(unsigned char), cudaMemcpyDeviceToDevice, save_stream);
+
+				cudaFreeAsync(d_posdata, save_stream);
+				cudaFreeAsync(d_veldata, save_stream);
+				cudaFreeAsync(d_IDs, save_stream);
+				cudaFreeAsync(d_loginfo, save_stream);
+
+				d_posdata = new_d_posdata;
+				d_veldata = new_d_veldata;
+				d_IDs = new_d_IDs;
+				d_loginfo = new_d_loginfo;
+
+				cudaMemcpyAsync(posdata, d_posdata, 3 * sizeof(float) * count, cudaMemcpyDeviceToHost, save_stream);
+				cudaMemcpyAsync(veldata, d_veldata, 3 * sizeof(float) * count, cudaMemcpyDeviceToHost, save_stream);
+				cudaMemcpyAsync(IDs, d_IDs, sizeof(int64_t) * count, cudaMemcpyDeviceToHost, save_stream);
+				cudaMemcpyAsync(loginfo, d_loginfo, count * sizeof(unsigned char), cudaMemcpyDeviceToHost, save_stream);
+
+				success = cudaStreamSynchronize(save_stream);
+
+				if (success != cudaSuccess)
 				{
-					throw std::runtime_error("Error reallocating memory for particle buffers");
+					throw std::runtime_error("CUDA error in resizing buffers for saveGadget2");
 				}
-
-				posdata = new_posdata;
-				veldata = new_veldata;
-				IDs = new_IDs;
-				loginfo = new_loginfo;
 			}
 
 			if (count > 0)
 			{
 				//buffer_count1 = 0;
-				cudaMemset(d_buffer_count1, 0, sizeof(unsigned long long int));
-				cudaMemcpy(d_buffer_count2, &buffer_count2, sizeof(unsigned long long int), cudaMemcpyHostToDevice);
+				cudaMemsetAsync(d_buffer_count1, 0, sizeof(unsigned long long int), save_stream);
+				cudaMemcpyAsync(d_buffer_count2, &buffer_count2, sizeof(unsigned long long int), cudaMemcpyHostToDevice, save_stream);
 
-				buffer_tracer_particles<part, part_info, IDlog_scatter><<<row_count, 128>>>(this, tracer_factor, lightcone, (Real) dist, inner, outer, dtau, dtau_old, (double) hdr.time, dadtau, this->boxSize_[0], domain, phi, vertex, vertexcount, posdata, veldata, IDs, loginfo, row_start, d_buffer_count1, d_buffer_count2);
+				buffer_tracer_particles<part, part_info, IDlog_scatter><<<row_count, 128, 0, save_stream>>>(this, tracer_factor, lightcone, (Real) dist, inner, outer, dtau, dtau_old, (double) hdr.time, dadtau, this->boxSize_[0], d_domain, phi, d_vertex, vertexcount, d_posdata, d_veldata, d_IDs, d_loginfo, row_start, d_buffer_count1, d_buffer_count2);
 
-				success = cudaDeviceSynchronize();
+				cudaMemcpyAsync(&buffer_count1, d_buffer_count1, sizeof(unsigned long long int), cudaMemcpyDeviceToHost, save_stream);
+
+				success = cudaStreamSynchronize(save_stream);
 
 				if (success != cudaSuccess)
 				{
 					throw std::runtime_error("CUDA error in buffer_tracer_particles");
 				}
 
-				cudaMemcpy(&buffer_count1, d_buffer_count1, sizeof(unsigned long long int), cudaMemcpyDeviceToHost);
-
 				if (buffer_count1 > 0)
 				{
+					cudaMemcpyAsync(posdata, d_posdata, 3 * sizeof(float) * buffer_count1, cudaMemcpyDeviceToHost, save_stream);
+					cudaMemcpyAsync(veldata, d_veldata, 3 * sizeof(float) * buffer_count1, cudaMemcpyDeviceToHost, save_stream);
+					cudaMemcpyAsync(IDs, d_IDs, sizeof(int64_t) * buffer_count1, cudaMemcpyDeviceToHost, save_stream);
+					cudaMemcpyAsync(loginfo, d_loginfo, buffer_count1 * sizeof(unsigned char), cudaMemcpyDeviceToHost, save_stream);
+
+					success = cudaStreamSynchronize(save_stream);
+					if (success != cudaSuccess)
+					{
+						throw std::runtime_error("CUDA error copying particle buffers to host in saveGadget2");
+					}
 #pragma omp parallel for
 					for (unsigned long long int i = 0; i < buffer_count1; i++)
 					{
@@ -1643,17 +1829,30 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 
 		MPI_File_close(&outfile);
 
-		free(posdata);
-		free(veldata);
-		free(loginfo);
+		cudaFreeHost(posdata);
+		cudaFreeHost(veldata);
+		cudaFreeHost(loginfo);
+		cudaFreeAsync(d_posdata, save_stream);
+		cudaFreeAsync(d_veldata, save_stream);
+		cudaFreeAsync(d_loginfo, save_stream);
 	}
 
-	free(IDs);
-	free(npart_row);
-	free(npart_checkID_row);
+	cudaFreeHost(IDs);
+	cudaFreeHost(npart_row);
+	cudaFreeHost(npart_checkID_row);
 
-	cudaFree(d_buffer_count1);
-	cudaFree(d_buffer_count2);
+	cudaFreeAsync(d_buffer_count1, save_stream);
+	cudaFreeAsync(d_buffer_count2, save_stream);
+	cudaFreeAsync(d_IDs, save_stream);
+	cudaFreeAsync(d_domain, save_stream);
+	cudaFreeAsync(d_vertex, save_stream);
+
+	success = cudaStreamSynchronize(save_stream);
+	if (success != cudaSuccess)
+	{
+		throw std::runtime_error("CUDA error synchronizing stream in saveGadget2");
+	}
+	cudaStreamDestroy(save_stream);
 }
 
 

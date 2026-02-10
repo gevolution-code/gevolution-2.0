@@ -223,17 +223,22 @@ void writeSnapshots(metadata & sim, cosmology & cosmo, const double fourpiG, con
 
 		double params = 1. / (a * a * sim.numpts);
 		double * d_params;
+		Field<Real> ** d_fieldptr;
+
 		cudaMalloc((void **) &d_params, sizeof(double));
+		cudaMalloc((void **) &d_fieldptr, sizeof(Field<Real> *));
+
 		cudaMemcpy(d_params, &params, sizeof(double), cudaMemcpyDefault);
+		cudaMemcpy(d_fieldptr, &Bi, sizeof(Field<Real> *), cudaMemcpyDefault);
 
-		lattice_for_each<<<dim3(Bi->lattice().sizeLocal(1), Bi->lattice().sizeLocal(2)), 128>>>(lattice_multiply_functor<3>(), sim.numpts, &Bi, 1, d_params, nullptr, nullptr);
-
+		lattice_for_each<<<dim3(Bi->lattice().sizeLocal(1), Bi->lattice().sizeLocal(2)), 128>>>(lattice_multiply_functor<3>(), sim.numpts, d_fieldptr, 1, d_params, nullptr, nullptr);
 		cudaDeviceSynchronize();
 		cudaFree(d_params);
+		cudaFree(d_fieldptr);
 
 		Bi->updateHalo();
 				
-		computeVectorDiagnostics(*Bi, divB, curlB);			
+		computeVectorDiagnostics(Bi, divB, curlB);			
 		COUT << " B diagnostics: max |divB| = " << divB << ", max |curlB| = " << curlB << endl;
 
 #ifdef EXTERNAL_IO
@@ -291,7 +296,7 @@ void writeSnapshots(metadata & sim, cosmology & cosmo, const double fourpiG, con
 			Sij->updateHalo();
 		}
 				
-		computeTensorDiagnostics(*Sij, divh, traceh, normh);
+		computeTensorDiagnostics(Sij, divh, traceh, normh);
 		COUT << " GW diagnostics: max |divh| = " << divh << ", max |traceh| = " << traceh << ", max |h| = " << normh << endl;
 
 #ifdef EXTERNAL_IO
@@ -377,13 +382,19 @@ void writeSnapshots(metadata & sim, cosmology & cosmo, const double fourpiG, con
 
 		double params = 1. / (a * a * sim.numpts);
 		double * d_params;
-		cudaMalloc((void **) &d_params, sizeof(double));
-		cudaMemcpy(d_params, &params, sizeof(double), cudaMemcpyDefault);
+		Field<Real> ** d_fieldptr;
 
-		lattice_for_each<<<dim3(Bi_check->lattice().sizeLocal(1), Bi_check->lattice().sizeLocal(2)), 128>>>(lattice_multiply_functor<3>(), sim.numpts, &Bi_check, 1, d_params, nullptr, nullptr);
+		cudaMalloc((void **) &d_params, sizeof(double));
+		cudaMalloc((void **) &d_fieldptr, sizeof(Field<Real> *));
+
+		cudaMemcpy(d_params, &params, sizeof(double), cudaMemcpyDefault);
+		cudaMemcpy(d_fieldptr, &Bi_check, sizeof(Field<Real> *), cudaMemcpyDefault);
+
+		lattice_for_each<<<dim3(Bi_check->lattice().sizeLocal(1), Bi_check->lattice().sizeLocal(2)), 128>>>(lattice_multiply_functor<3>(), sim.numpts, d_fieldptr, 1, d_params, nullptr, nullptr);
 
 		cudaDeviceSynchronize();
 		cudaFree(d_params);
+		cudaFree(d_fieldptr);
 			
 #ifdef EXTERNAL_IO
 		Bi_check->saveHDF5_server_write(NUMBER_OF_IO_FILES);
