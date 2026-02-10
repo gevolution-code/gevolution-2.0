@@ -317,20 +317,20 @@ int main(int argc, char **argv)
 	Field<Cplx> SijFT;
 	Field<Cplx> BiFT;
 	Field<Cplx> * zetaFT = NULL;
-	source.initialize(lat,1);
-	phi.initialize(lat,1);
-	chi.initialize(lat,1);
-	scalarFT.initialize(latFT,1);
-	Sij.initialize(lat,3,3,symmetric);
-	SijFT.initialize(latFT,3,3,symmetric);
-	PlanFFT<Cplx> plan_Sij(&Sij, &SijFT);
+	source->initialize(*lat,1);
+	phi->initialize(*lat,1);
+	chi->initialize(*lat,1);
+	scalarFT.initialize(*latFT,1);
+	Sij->initialize(*lat,3,3,symmetric);
+	SijFT.initialize(*latFT,3,3,symmetric);
+	PlanFFT<Cplx> plan_Sij(Sij, &SijFT);
 	plan_Sij.preallocate(); // largest tempMemory (including halo..) required here
-	PlanFFT<Cplx> plan_source(&source, &scalarFT);
-	PlanFFT<Cplx> plan_phi(&phi, &scalarFT);
-	PlanFFT<Cplx> plan_chi(&chi, &scalarFT);
-	Bi.initialize(lat,3);
-	BiFT.initialize(latFT,3);
-	PlanFFT<Cplx> plan_Bi(&Bi, &BiFT);
+	PlanFFT<Cplx> plan_source(source, &scalarFT);
+	PlanFFT<Cplx> plan_phi(phi, &scalarFT);
+	PlanFFT<Cplx> plan_chi(chi, &scalarFT);
+	Bi->initialize(*lat,3);
+	BiFT.initialize(*latFT,3);
+	PlanFFT<Cplx> plan_Bi(Bi, &BiFT);
 #ifdef CHECK_B
 	Field<Real> * Bi_check;
 	Field<Cplx> BiFT_check;
