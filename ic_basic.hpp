@@ -2105,8 +2105,8 @@ parameter * params, int & numparam)
 				gsl_spline_free(tk_t2);
 				tk_d2 = gsl_spline_alloc(gsl_interp_cspline, tk_d1->size);
 				tk_t2 = gsl_spline_alloc(gsl_interp_cspline, tk_d1->size);
-				gsl_spline_init(tk_d2, tk_d2->x, temp1, tk_d1->size);
-				gsl_spline_init(tk_t2, tk_d2->x, temp2, tk_d1->size);
+				gsl_spline_init(tk_d2, tk_d1->x, temp1, tk_d1->size);
+				gsl_spline_init(tk_t2, tk_d1->x, temp2, tk_d1->size);
 			}
 		}
 		
