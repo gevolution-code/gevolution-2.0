@@ -261,15 +261,16 @@ int main(int argc, char **argv)
 	latFT->initializeRealFFT(*lat,0);
 	
 	perfParticles_gevolution<part_simple,part_simple_info> * pcls_cdm;
-	perfParticles_gevolution<part_simple,part_simple_info> * pcls_b;
+	perfParticles_gevolution<part_simple,part_simple_info> * pcls_b = nullptr;
 	Particles_gevolution<part_simple,part_simple_info,part_simple_dataType> * pcls_ncdm = nullptr;
 
 	cudaMallocManaged(&pcls_cdm, sizeof(perfParticles_gevolution<part_simple,part_simple_info>));
-	cudaMallocManaged(&pcls_b, sizeof(perfParticles_gevolution<part_simple,part_simple_info>));
-
 	new (pcls_cdm) perfParticles_gevolution<part_simple,part_simple_info>();
-	new (pcls_b) perfParticles_gevolution<part_simple,part_simple_info>();
-
+	if (sim.baryon_flag)
+	{
+		cudaMallocManaged(&pcls_b, sizeof(perfParticles_gevolution<part_simple,part_simple_info>));
+		new (pcls_b) perfParticles_gevolution<part_simple,part_simple_info>();
+	}
 	if (cosmo.num_ncdm > 0) 
 	{
 		cudaMallocManaged(&pcls_ncdm, cosmo.num_ncdm * sizeof(Particles_gevolution<part_simple,part_simple_info,part_simple_dataType>));
@@ -599,6 +600,11 @@ int main(int argc, char **argv)
 
 	if (dtau_old < 0.)
 		dtau_old = 0.;
+
+	double tau_final = particleHorizon(1., fourpiG, cosmo);
+	double tau_initial = tau;
+	double tau_diff = tau_final - tau_initial;
+	double time_startloop = MPI_Wtime();
 
 	while (true)    // main loop
 	{
@@ -1166,6 +1172,14 @@ int main(int argc, char **argv)
 				}
 			}
 			
+			double tau_now = particleHorizon(a, fourpiG, cosmo);
+			double progress = (tau_now - tau_initial) / tau_diff;
+			if (progress > 0.)
+			{
+				double elapsed = MPI_Wtime() - time_startloop;
+				double remain = elapsed * (1. / progress - 1.);
+				COUT << endl << " progress " << 100. * progress << "% eta " << hourMinSec(remain);
+			}
 			COUT << endl;
 		}
 
@@ -1364,10 +1378,11 @@ delete [] IDbacklog;
 
 	pcls_cdm->~perfParticles_gevolution<part_simple,part_simple_info>();
 	if (sim.baryon_flag)
+	{
 		pcls_b->~perfParticles_gevolution<part_simple,part_simple_info>();
-
+		cudaFree(pcls_b);
+	}
 	cudaFree(pcls_cdm);
-	cudaFree(pcls_b);
 
 	phi->~Field<Real>();
 	source->~Field<Real>();
@@ -1425,7 +1440,12 @@ delete [] IDbacklog;
 	}
 #endif
 
-	if (cosmo.num_ncdm > 0) delete[] pcls_ncdm;
+	if (cosmo.num_ncdm > 0)
+	{
+		for (int i = 0; i < cosmo.num_ncdm; i++)
+			pcls_ncdm[i].~Particles_gevolution<part_simple,part_simple_info,part_simple_dataType>();
+		cudaFree(pcls_ncdm);
+	}
 
 	parallel.finalize();
 
