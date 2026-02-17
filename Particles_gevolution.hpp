@@ -655,19 +655,12 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 
 				buffer_tracer_particles<<<row_count, 128, 0, save_stream>>>(this, tracer_factor, dtau_pos, dtau_vel, hdr.time, hdr.BoxSize, phi, d_posdata, d_veldata, d_IDs, row_start, d_buffer_count);
 
-				success = cudaStreamSynchronize(save_stream);
-
-				if (success != cudaSuccess)
-				{
-					throw std::runtime_error("CUDA error in buffer_tracer_particles");
-				}
-
 				cudaMemcpyAsync(&buffer_count, d_buffer_count, sizeof(unsigned long long int), cudaMemcpyDeviceToHost, save_stream);
 				success = cudaStreamSynchronize(save_stream);
 
 				if (success != cudaSuccess)
 				{
-					throw std::runtime_error("CUDA error in buffer count transfer for saveGadget2");
+					throw std::runtime_error("CUDA error in buffer_tracer_particles for saveGadget2");
 				}
 				nvtxRangePop();
 
@@ -1562,7 +1555,7 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 
 			d_IDs = d_new_IDs;
 
-			cudaMemcpyAsync(IDs, d_IDs, sizeof(int64_t) * PCLBUFFER, cudaMemcpyDeviceToHost, save_stream);
+			cudaMemcpyAsync(IDs, d_IDs, sizeof(int64_t) * PCLBUFFER, cudaMemcpyDefault, save_stream);
 
 			success = cudaStreamSynchronize(save_stream);
 
@@ -1753,12 +1746,15 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 			{
 				//buffer_count1 = 0;
 				cudaMemsetAsync(d_buffer_count1, 0, sizeof(unsigned long long int), save_stream);
-				cudaMemcpyAsync(d_buffer_count2, &buffer_count2, sizeof(unsigned long long int), cudaMemcpyHostToDevice, save_stream);
+				cudaMemcpyAsync(d_buffer_count2, &buffer_count2, sizeof(unsigned long long int), cudaMemcpyDefault, save_stream);
 
 				buffer_tracer_particles<part, part_info, IDlog_scatter><<<row_count, 128, 0, save_stream>>>(this, tracer_factor, lightcone, (Real) dist, inner, outer, dtau, dtau_old, (double) hdr.time, dadtau, this->boxSize_[0], d_domain, phi, d_vertex, vertexcount, d_posdata, d_veldata, d_IDs, d_loginfo, row_start, d_buffer_count1, d_buffer_count2);
 
-				cudaMemcpyAsync(&buffer_count1, d_buffer_count1, sizeof(unsigned long long int), cudaMemcpyDeviceToHost, save_stream);
-				cudaMemcpyAsync(&buffer_count2, d_buffer_count2, sizeof(unsigned long long int), cudaMemcpyDeviceToHost, save_stream);
+				cudaMemcpyAsync(&buffer_count1, d_buffer_count1, sizeof(unsigned long long int), cudaMemcpyDefault, save_stream);
+				cudaMemcpyAsync(posdata, d_posdata, 3 * sizeof(float) * count, cudaMemcpyDefault, save_stream);
+				cudaMemcpyAsync(veldata, d_veldata, 3 * sizeof(float) * count, cudaMemcpyDefault, save_stream);
+				cudaMemcpyAsync(IDs, d_IDs, sizeof(int64_t) * count, cudaMemcpyDefault, save_stream);
+				cudaMemcpyAsync(loginfo, d_loginfo, count * sizeof(unsigned char), cudaMemcpyDefault, save_stream);
 
 				success = cudaStreamSynchronize(save_stream);
 
@@ -1767,58 +1763,52 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 					throw std::runtime_error("CUDA error in buffer_tracer_particles");
 				}
 
-				count = (long) buffer_count2;
-
-				if (count > 0)
+				if (buffer_count1 > 0)
 				{
-					cudaMemcpyAsync(posdata, d_posdata, 3 * sizeof(float) * count, cudaMemcpyDeviceToHost, save_stream);
-					cudaMemcpyAsync(veldata, d_veldata, 3 * sizeof(float) * count, cudaMemcpyDeviceToHost, save_stream);
-					cudaMemcpyAsync(IDs, d_IDs, sizeof(int64_t) * count, cudaMemcpyDeviceToHost, save_stream);
-					cudaMemcpyAsync(loginfo, d_loginfo, count * sizeof(unsigned char), cudaMemcpyDeviceToHost, save_stream);
-
-					success = cudaStreamSynchronize(save_stream);
-					if (success != cudaSuccess)
+#pragma omp parallel for
+					for (unsigned long long int i = 0; i < buffer_count1; i++)
 					{
-						throw std::runtime_error("CUDA error copying particle buffers to host in saveGadget2");
-					}
-
-					// Two-pass host-side filter against ID backlog:
-					// pass 1: mark entries to keep and count survivors
-					std::vector<unsigned char> keep(count, 0);
-					long keep_count = 0;
-
-#pragma omp parallel for reduction(+:keep_count)
-					for (long i = 0; i < count; i++)
-					{
-						if (IDbacklog.find(IDs[i]) == IDbacklog.end())
+						if (IDbacklog.find(IDs[i]) != IDbacklog.end()) // need to remove particle from buffers
 						{
-							keep[i] = 1;
-							keep_count++;
+							#pragma omp critical
+							{
+								if (count > buffer_count1)
+								{
+									for (int j = 0; j < 3; j++)
+									{
+										posdata[3*i+j] = posdata[3*(count-1)+j];
+										veldata[3*i+j] = veldata[3*(count-1)+j];
+									}
+
+									IDs[i] = IDs[count-1];
+									loginfo[i] = loginfo[count-1];
+
+									count--;
+								}
+							}
 						}
 					}
 
-					// pass 2: stable compaction in-place
-					if (keep_count < count)
+					if (count == buffer_count1) // we were unlucky and need to check again in a non-parallel way
 					{
-						long write_idx = 0;
-						for (long i = 0; i < count; i++)
+						for (unsigned long long int i = 0; i < count; i++)
 						{
-							if (!keep[i]) continue;
-							if (write_idx != i)
+							if (IDbacklog.find(IDs[i]) != IDbacklog.end())
 							{
 								for (int j = 0; j < 3; j++)
 								{
-									posdata[3*write_idx+j] = posdata[3*i+j];
-									veldata[3*write_idx+j] = veldata[3*i+j];
+									posdata[3*i+j] = posdata[3*(count-1)+j];
+									veldata[3*i+j] = veldata[3*(count-1)+j];
 								}
-								IDs[write_idx] = IDs[i];
-								loginfo[write_idx] = loginfo[i];
+
+								IDs[i] = IDs[count-1];
+								loginfo[i] = loginfo[count-1];
+
+								count--;
+								i--;
 							}
-							write_idx++;
 						}
 					}
-
-					count = keep_count;
 				}
 			}
 			nvtxRangePop();
