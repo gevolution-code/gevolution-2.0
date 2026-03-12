@@ -671,7 +671,7 @@ int main(int argc, char **argv)
 		if ((sim.out_pk & MASK_VEL) || (sim.out_snapshot & MASK_VEL))
 		{
 			//projection_init(&Bi);
-			thrust::fill_n(thrust::device, Bi.data(), 3*lat.sitesLocalGross(), Real(0));
+			thrust::fill_n(thrust::device, Bi->data(), 3*lat->sitesLocalGross(), Real(0));
             projection_Ti0_project(pcls_cdm, Bi, phi, chi);
             vertexProjectionCIC_comm(Bi);
             compute_vi_rescaled(cosmo, vi, source, Bi, a, a_old);
@@ -1060,7 +1060,7 @@ int main(int argc, char **argv)
 				, Bi_check, &BiFT_check, &plan_Bi_check
 #endif
 #ifdef VELOCITY
-				, &vi
+				, vi
 #endif
 			);
 
@@ -1395,6 +1395,11 @@ delete [] IDbacklog;
 	cudaFree(chi);
 	cudaFree(Bi);
 	cudaFree(Sij);
+
+#ifdef VELOCITY
+	vi->~Field<Real>();
+	cudaFree(vi);
+#endif
 
 	lat->~Lattice();
 	cudaFree(lat);
