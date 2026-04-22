@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <algorithm>
 #include <vector>
+#include <stdexcept>
 #include <nvtx3/nvToolsExt.h>
 
 using namespace std;
@@ -709,6 +710,8 @@ __global__ void project_metric_to_healpix_batch(Real * pixbuf_phi, Real * pixbuf
 	}
 }
 
+inline void healpix_cuda_check(cudaError_t success, const char * context);
+
 void create_packmap(int64_t * packmap, int64_t pix, int pixbatch_size, int64_t nside, int64_t npix)
 {
 	int64_t * temp = (int64_t *) alloca(pixbatch_size * sizeof(int64_t));
@@ -733,7 +736,108 @@ void create_packmap(int64_t * packmap, int64_t pix, int pixbatch_size, int64_t n
 		pix++;
 	}
 
-	cudaMemcpy(packmap, temp, pixbatch_size * sizeof(int64_t), cudaMemcpyDefault);
+	healpix_cuda_check(cudaMemcpy(packmap, temp, pixbatch_size * sizeof(int64_t), cudaMemcpyDefault), "pixel packmap copy");
+}
+
+inline void healpix_cuda_check(cudaError_t success, const char * context)
+{
+	if (success != cudaSuccess)
+	{
+		cout << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": proc#" << parallel.rank() << " CUDA error in writeLightcones (" << context << "): " << cudaGetErrorString(success) << endl;
+		throw std::runtime_error("CUDA error");
+	}
+}
+
+inline void healpix_cuda_malloc(Real ** buffer, int64_t count)
+{
+	healpix_cuda_check(cudaMalloc((void **) buffer, sizeof(Real) * count), "pixel buffer allocation");
+}
+
+inline void healpix_cuda_grow(Real ** buffer, int64_t old_count, int64_t new_count)
+{
+	Real * new_buffer = NULL;
+
+	healpix_cuda_check(cudaMalloc((void **) &new_buffer, sizeof(Real) * new_count), "pixel buffer reallocation");
+	if (*buffer != NULL && old_count > 0)
+		healpix_cuda_check(cudaMemcpy(new_buffer, *buffer, sizeof(Real) * old_count, cudaMemcpyDeviceToDevice), "pixel buffer grow copy");
+	if (*buffer != NULL)
+		healpix_cuda_check(cudaFree(*buffer), "pixel buffer grow free");
+
+	*buffer = new_buffer;
+}
+
+inline void healpix_pack3(Real * dst, Real * src0, int64_t size0, Real * src1, int64_t size1, Real * src2, int64_t size2)
+{
+	if (size0 > 0)
+		healpix_cuda_check(cudaMemcpy(dst, src0, size0 * sizeof(Real), cudaMemcpyDeviceToDevice), "pixel buffer pack");
+	if (size1 > 0)
+		healpix_cuda_check(cudaMemcpy(dst + size0, src1, size1 * sizeof(Real), cudaMemcpyDeviceToDevice), "pixel buffer pack");
+	if (size2 > 0)
+		healpix_cuda_check(cudaMemcpy(dst + size0 + size1, src2, size2 * sizeof(Real), cudaMemcpyDeviceToDevice), "pixel buffer pack");
+}
+
+__global__ void healpix_add_packed3_kernel(Real * dst0, int64_t size0, Real * dst1, int64_t size1, Real * dst2, int64_t size2, const Real * src)
+{
+	int64_t q = blockIdx.x * blockDim.x + threadIdx.x;
+	int64_t total = size0 + size1 + size2;
+
+	if (q >= total)
+		return;
+
+	if (q < size0)
+		dst0[q] += src[q];
+	else if (q < size0 + size1)
+		dst1[q - size0] += src[q];
+	else
+		dst2[q - size0 - size1] += src[q];
+}
+
+__global__ void healpix_add_kernel(Real * dst, const Real * src, int64_t size)
+{
+	int64_t q = blockIdx.x * blockDim.x + threadIdx.x;
+
+	if (q < size)
+		dst[q] += src[q];
+}
+
+inline void healpix_add_packed3(Real * dst0, int64_t size0, Real * dst1, int64_t size1, Real * dst2, int64_t size2, Real * src)
+{
+	int64_t total = size0 + size1 + size2;
+
+	if (total <= 0)
+		return;
+
+	healpix_add_packed3_kernel<<<(total + 255) / 256, 256>>>(dst0, size0, dst1, size1, dst2, size2, src);
+	healpix_cuda_check(cudaGetLastError(), "pixel buffer accumulation launch");
+}
+
+inline void healpix_add(Real * dst, Real * src, int64_t size)
+{
+	if (size <= 0)
+		return;
+
+	healpix_add_kernel<<<(size + 255) / 256, 256>>>(dst, src, size);
+	healpix_cuda_check(cudaGetLastError(), "pixel buffer accumulation launch");
+}
+
+inline void healpix_sync_if(bool & required_pending, bool & other_pending, const char * context)
+{
+	if (required_pending)
+	{
+		healpix_cuda_check(cudaStreamSynchronize(0), context);
+		required_pending = false;
+		other_pending = false;
+	}
+}
+
+inline void healpix_sync_any(bool & pending_a, bool & pending_b, const char * context)
+{
+	if (pending_a || pending_b)
+	{
+		healpix_cuda_check(cudaStreamSynchronize(0), context);
+		pending_a = false;
+		pending_b = false;
+	}
 }
 
 #endif
@@ -969,22 +1073,22 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 			if (sim.out_lightcone[i] & MASK_PHI)
 			{
 				for (j = 0; j < 9; j++)
-					pixbuf[LIGHTCONE_PHI_OFFSET][j] = (Real *) malloc(sizeof(Real) * PIXBUFFER);
+					healpix_cuda_malloc(&pixbuf[LIGHTCONE_PHI_OFFSET][j], PIXBUFFER);
 			}
 		
 			if (sim.out_lightcone[i] & MASK_CHI)
 			{
 				for (j = 0; j < 9; j++)
-					pixbuf[LIGHTCONE_CHI_OFFSET][j] = (Real *) malloc(sizeof(Real) * PIXBUFFER);
+					healpix_cuda_malloc(&pixbuf[LIGHTCONE_CHI_OFFSET][j], PIXBUFFER);
 			}
 		
 			if (sim.out_lightcone[i] & MASK_B)
 			{
 				for (j = 0; j < 9; j++)
 				{
-					pixbuf[LIGHTCONE_B_OFFSET][j] = (Real *) malloc(sizeof(Real) * PIXBUFFER);
-					pixbuf[LIGHTCONE_B_OFFSET+1][j] = (Real *) malloc(sizeof(Real) * PIXBUFFER);
-					pixbuf[LIGHTCONE_B_OFFSET+2][j] = (Real *) malloc(sizeof(Real) * PIXBUFFER);
+					healpix_cuda_malloc(&pixbuf[LIGHTCONE_B_OFFSET][j], PIXBUFFER);
+					healpix_cuda_malloc(&pixbuf[LIGHTCONE_B_OFFSET+1][j], PIXBUFFER);
+					healpix_cuda_malloc(&pixbuf[LIGHTCONE_B_OFFSET+2][j], PIXBUFFER);
 				}
 			}
 
@@ -992,11 +1096,11 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 			{
 				for (j = 0; j < 9; j++)
 				{
-					pixbuf[LIGHTCONE_HIJ_OFFSET][j] = (Real *) malloc(sizeof(Real) * PIXBUFFER);
-					pixbuf[LIGHTCONE_HIJ_OFFSET+1][j] = (Real *) malloc(sizeof(Real) * PIXBUFFER);
-					pixbuf[LIGHTCONE_HIJ_OFFSET+2][j] = (Real *) malloc(sizeof(Real) * PIXBUFFER);
-					pixbuf[LIGHTCONE_HIJ_OFFSET+3][j] = (Real *) malloc(sizeof(Real) * PIXBUFFER);
-					pixbuf[LIGHTCONE_HIJ_OFFSET+4][j] = (Real *) malloc(sizeof(Real) * PIXBUFFER);
+					healpix_cuda_malloc(&pixbuf[LIGHTCONE_HIJ_OFFSET][j], PIXBUFFER);
+					healpix_cuda_malloc(&pixbuf[LIGHTCONE_HIJ_OFFSET+1][j], PIXBUFFER);
+					healpix_cuda_malloc(&pixbuf[LIGHTCONE_HIJ_OFFSET+2][j], PIXBUFFER);
+					healpix_cuda_malloc(&pixbuf[LIGHTCONE_HIJ_OFFSET+3][j], PIXBUFFER);
+					healpix_cuda_malloc(&pixbuf[LIGHTCONE_HIJ_OFFSET+4][j], PIXBUFFER);
 				}
 			}
 
@@ -1144,6 +1248,8 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 							kernels_running = 0;
 						}
 
+						int old_reserve = pixbuf_reserve[j];
+
 						do
 						{
 							pixbuf_reserve[j] += PIXBUFFER;
@@ -1153,14 +1259,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 						for (int f = 0; f < LIGHTCONE_MAX_FIELDS; f++)
 						{
 							if (pixbuf[f][j] != NULL)
-							{
-								pixbuf[f][j] = (Real *) realloc((void *) pixbuf[q][j], sizeof(Real) * pixbuf_reserve[j]);
-								if (pixbuf[f][j] == NULL)
-								{
-									cout << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": proc#" << parallel.rank() << " unable to allocate memory for pixelisation!" << endl;
-									parallel.abortForce();
-								}
-							}
+								healpix_cuda_grow(&pixbuf[f][j], old_reserve, pixbuf_reserve[j]);
 						}
 						nvtxRangePop();
 					}
@@ -1170,7 +1269,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 						if (packmap[pixbatch_type-1] == nullptr)
 						{
 							nvtxRangePushA("create pixel packmap");
-							cudaMalloc((void **) &packmap[pixbatch_type-1], pixbatch_size[0].back() * sizeof(int64_t));
+							healpix_cuda_check(cudaMalloc((void **) &packmap[pixbatch_type-1], pixbatch_size[0].back() * sizeof(int64_t)), "pixel packmap allocation");
 							create_packmap(packmap[pixbatch_type-1], pix, pixbatch_size[0].back(), maphdr.Nside, maphdr.Npix);
 							nvtxRangePop();
 						}
@@ -1184,184 +1283,6 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 					}
 
 					kernels_running |= (1 << j);
-					
-					/*for (q = 0; q < pixbatch_size[pixbatch_type].back(); pix++)
-					{
-						if (pixbatch_type)
-						{
-							nest2ring64(maphdr.Nside, pix, &pix2);
-							if (pix2 >= maphdr.Npix) continue;
-						}
-						
-						pix2vec_nest64(maphdr.Nside, pix, w);
-						
-						pos[0] = (maphdr.distance * (R[0][0] * w[0] + R[0][1] * w[1] + R[0][2] * w[2]) + sim.lightcone[i].vertex[0]) * sim.numpts;
-						pos[1] = (maphdr.distance * (R[1][0] * w[0] + R[1][1] * w[1] + R[1][2] * w[2]) + sim.lightcone[i].vertex[1]) * sim.numpts;
-						pos[2] = (maphdr.distance * (R[2][0] * w[0] + R[2][1] * w[1] + R[2][2] * w[2]) + sim.lightcone[i].vertex[2]) * sim.numpts;
-
-						if (pos[0] >= 0)
-						{
-							w[0] = modf(pos[0], &temp);
-							base_pos[0] = (int) temp % sim.numpts;
-						}
-						else
-						{
-							w[0] = 1. + modf(pos[0], &temp);
-							base_pos[0] = sim.numpts - 1 - (((int) -temp) % sim.numpts);
-						}
-						if (pos[1] >= 0)
-						{
-							w[1] = modf(pos[1], &temp);
-							base_pos[1] = (int) temp % sim.numpts;
-						}
-						else
-						{
-							w[1] = 1. + modf(pos[1], &temp);
-							base_pos[1] = sim.numpts - 1 - (((int) -temp) % sim.numpts);
-						}
-						if (pos[2] >= 0)
-						{
-							w[2] = modf(pos[2], &temp);
-							base_pos[2] = (int) temp % sim.numpts;
-						}
-						else
-						{
-							w[2] = 1. + modf(pos[2], &temp);
-							base_pos[2] = sim.numpts - 1 - (((int) -temp) % sim.numpts);
-						}				
-
-						if (xsim.setCoord(base_pos))
-						{
-							if (sim.out_lightcone[i] & MASK_PHI)
-							{
-								*(pixbuf[LIGHTCONE_PHI_OFFSET][j]+pixbuf_size[j]+q) = (1.-w[0]) * (1.-w[1]) * ((1.-w[2]) * (*phi)(xsim) + w[2] * (*phi)(xsim+2));
-								*(pixbuf[LIGHTCONE_PHI_OFFSET][j]+pixbuf_size[j]+q) += w[0] * (1.-w[1]) * ((1.-w[2]) * (*phi)(xsim+0) + w[2] * (*phi)(xsim+0+2));
-								*(pixbuf[LIGHTCONE_PHI_OFFSET][j]+pixbuf_size[j]+q) += w[0] * w[1] * ((1.-w[2]) * (*phi)(xsim+0+1) + w[2] * (*phi)(xsim+0+1+2));
-								*(pixbuf[LIGHTCONE_PHI_OFFSET][j]+pixbuf_size[j]+q) += (1.-w[0]) * w[1] * ((1.-w[2]) * (*phi)(xsim+1) + w[2] * (*phi)(xsim+1+2));
-							}
-							if (sim.out_lightcone[i] & MASK_CHI)
-							{
-								*(pixbuf[LIGHTCONE_CHI_OFFSET][j]+pixbuf_size[j]+q) = (1.-w[0]) * (1.-w[1]) * ((1.-w[2]) * (*chi)(xsim) + w[2] * (*chi)(xsim+2));
-								*(pixbuf[LIGHTCONE_CHI_OFFSET][j]+pixbuf_size[j]+q) += w[0] * (1.-w[1]) * ((1.-w[2]) * (*chi)(xsim+0) + w[2] * (*chi)(xsim+0+2));
-								*(pixbuf[LIGHTCONE_CHI_OFFSET][j]+pixbuf_size[j]+q) += w[0] * w[1] * ((1.-w[2]) * (*chi)(xsim+0+1) + w[2] * (*chi)(xsim+0+1+2));
-								*(pixbuf[LIGHTCONE_CHI_OFFSET][j]+pixbuf_size[j]+q) += (1.-w[0]) * w[1] * ((1.-w[2]) * (*chi)(xsim+1) + w[2] * (*chi)(xsim+1+2));
-							}
-							if (sim.out_lightcone[i] & MASK_B)
-							{
-#ifdef LIGHTCONE_INTERPOLATE
-								*(pixbuf[LIGHTCONE_B_OFFSET][j]+pixbuf_size[j]+q) = (1.-w[2]) * (1.-w[1]) * ((1.-w[0]) * (*Bi)(xsim-0,0) + w[0] * (*Bi)(xsim+0,0) + (*Bi)(xsim,0));
-								*(pixbuf[LIGHTCONE_B_OFFSET][j]+pixbuf_size[j]+q) += w[2] * (1.-w[1]) * ((1.-w[0]) * (*Bi)(xsim-0+2,0) + w[0] * (*Bi)(xsim+0+2,0) + (*Bi)(xsim+2,0));
-								*(pixbuf[LIGHTCONE_B_OFFSET][j]+pixbuf_size[j]+q) += w[2] * w[1] * ((1.-w[0]) * (*Bi)(xsim-0+1+2,0) + w[0] * (*Bi)(xsim+0+1+2,0) + (*Bi)(xsim+1+2,0));
-								*(pixbuf[LIGHTCONE_B_OFFSET][j]+pixbuf_size[j]+q) += (1.-w[2]) * w[1] * ((1.-w[0]) * (*Bi)(xsim-0+1,0) + w[0] * (*Bi)(xsim+0+1,0) + (*Bi)(xsim+1,0));
-
-								*(pixbuf[LIGHTCONE_B_OFFSET+1][j]+pixbuf_size[j]+q) = (1.-w[2]) * (1.-w[0]) * ((1.-w[1]) * (*Bi)(xsim-1,1) + w[1] * (*Bi)(xsim+1,1) + (*Bi)(xsim,1));
-								*(pixbuf[LIGHTCONE_B_OFFSET+1][j]+pixbuf_size[j]+q) += w[2] * (1.-w[0]) * ((1.-w[1]) * (*Bi)(xsim-1+2,1) + w[1] * (*Bi)(xsim+1+2,1) + (*Bi)(xsim+2,1));
-								*(pixbuf[LIGHTCONE_B_OFFSET+1][j]+pixbuf_size[j]+q) += w[2] * w[0] * ((1.-w[1]) * (*Bi)(xsim+0-1+2,1) + w[1] * (*Bi)(xsim+0+1+2,1) + (*Bi)(xsim+0+2,1));
-								*(pixbuf[LIGHTCONE_B_OFFSET+1][j]+pixbuf_size[j]+q) += (1.-w[2]) * w[0] * ((1.-w[1]) * (*Bi)(xsim+0-1,1) + w[1] * (*Bi)(xsim+0+1,1) + (*Bi)(xsim+0,1));
-
-								*(pixbuf[LIGHTCONE_B_OFFSET+2][j]+pixbuf_size[j]+q) = (1.-w[0]) * (1.-w[1]) * ((1.-w[2]) * (*Bi)(xsim-2,2) + w[2] * (*Bi)(xsim+2,2) + (*Bi)(xsim,2));
-								*(pixbuf[LIGHTCONE_B_OFFSET+2][j]+pixbuf_size[j]+q) += w[0] * (1.-w[1]) * ((1.-w[2]) * (*Bi)(xsim+0-2,2) + w[2] * (*Bi)(xsim+0+2,2) + (*Bi)(xsim+0,2));
-								*(pixbuf[LIGHTCONE_B_OFFSET+2][j]+pixbuf_size[j]+q) += w[0] * w[1] * ((1.-w[2]) * (*Bi)(xsim+0+1-2,2) + w[2] * (*Bi)(xsim+0+1+2,2) + (*Bi)(xsim+0+1,2));
-								*(pixbuf[LIGHTCONE_B_OFFSET+2][j]+pixbuf_size[j]+q) += (1.-w[0]) * w[1] * ((1.-w[2]) * (*Bi)(xsim+1-2,2) + w[2] * (*Bi)(xsim+1+2,2) + (*Bi)(xsim+1,2));
-
-								*(pixbuf[LIGHTCONE_B_OFFSET][j]+pixbuf_size[j]+q) /= 2. * a * a * sim.numpts;
-								*(pixbuf[LIGHTCONE_B_OFFSET+1][j]+pixbuf_size[j]+q) /= 2. * a * a * sim.numpts;
-								*(pixbuf[LIGHTCONE_B_OFFSET+2][j]+pixbuf_size[j]+q) /= 2. * a * a * sim.numpts;
-#else
-								if (w[0] > 0.5)
-								{
-									*(pixbuf[LIGHTCONE_B_OFFSET][j]+pixbuf_size[j]+q) = (1.5-w[0]) * (1.-w[1]) * ((1.-w[2]) * (*Bi)(xsim,0) + w[2] * (*Bi)(xsim+2,0));
-									*(pixbuf[LIGHTCONE_B_OFFSET][j]+pixbuf_size[j]+q) += (1.5-w[0]) * w[1] * ((1.-w[2]) * (*Bi)(xsim+1,0) + w[2] * (*Bi)(xsim+1+2,0));
-									*(pixbuf[LIGHTCONE_B_OFFSET][j]+pixbuf_size[j]+q) += (w[0]-0.5) * w[1] * ((1.-w[2]) * (*Bi)(xsim+0+1,0) + w[2] * (*Bi)(xsim+0+1+2,0));
-									*(pixbuf[LIGHTCONE_B_OFFSET][j]+pixbuf_size[j]+q) += (w[0]-0.5) * (1.-w[1]) * ((1.-w[2]) * (*Bi)(xsim+0,0) + w[2] * (*Bi)(xsim+0+2,0));
-								}
-								else
-								{
-									*(pixbuf[LIGHTCONE_B_OFFSET][j]+pixbuf_size[j]+q) = (0.5+w[0]) * (1.-w[1]) * ((1.-w[2]) * (*Bi)(xsim,0) + w[2] * (*Bi)(xsim+2,0));
-									*(pixbuf[LIGHTCONE_B_OFFSET][j]+pixbuf_size[j]+q) += (0.5+w[0]) * w[1] * ((1.-w[2]) * (*Bi)(xsim+1,0) + w[2] * (*Bi)(xsim+1+2,0));
-									*(pixbuf[LIGHTCONE_B_OFFSET][j]+pixbuf_size[j]+q) += (0.5-w[0]) * w[1] * ((1.-w[2]) * (*Bi)(xsim-0+1,0) + w[2] * (*Bi)(xsim-0+1+2,0));
-									*(pixbuf[LIGHTCONE_B_OFFSET][j]+pixbuf_size[j]+q) += (0.5-w[0]) * (1.-w[1]) * ((1.-w[2]) * (*Bi)(xsim-0,0) + w[2] * (*Bi)(xsim-0+2,0));
-								}
-								if (w[1] > 0.5)
-								{
-									*(pixbuf[LIGHTCONE_B_OFFSET+1][j]+pixbuf_size[j]+q) = (1.-w[0]) * (1.5-w[1]) * ((1.-w[2]) * (*Bi)(xsim,1) + w[2] * (*Bi)(xsim+2,1));
-									*(pixbuf[LIGHTCONE_B_OFFSET+1][j]+pixbuf_size[j]+q) += (1.-w[0]) * (w[1]-0.5) * ((1.-w[2]) * (*Bi)(xsim+1,1) + w[2] * (*Bi)(xsim+1+2,1));
-									*(pixbuf[LIGHTCONE_B_OFFSET+1][j]+pixbuf_size[j]+q) += w[0] * (w[1]-0.5) * ((1.-w[2]) * (*Bi)(xsim+0+1,1) + w[2] * (*Bi)(xsim+0+1+2,1));
-									*(pixbuf[LIGHTCONE_B_OFFSET+1][j]+pixbuf_size[j]+q) += w[0] * (1.5-w[1]) * ((1.-w[2]) * (*Bi)(xsim+0,1) + w[2] * (*Bi)(xsim+0+2,1));
-								}
-								else
-								{
-									*(pixbuf[LIGHTCONE_B_OFFSET+1][j]+pixbuf_size[j]+q) = (1.-w[0]) * (0.5+w[1]) * ((1.-w[2]) * (*Bi)(xsim,1) + w[2] * (*Bi)(xsim+2,1));
-									*(pixbuf[LIGHTCONE_B_OFFSET+1][j]+pixbuf_size[j]+q) += (1.-w[0]) * (0.5-w[1]) * ((1.-w[2]) * (*Bi)(xsim-1,1) + w[2] * (*Bi)(xsim-1+2,1));
-									*(pixbuf[LIGHTCONE_B_OFFSET+1][j]+pixbuf_size[j]+q) += w[0] * (0.5-w[1]) * ((1.-w[2]) * (*Bi)(xsim+0-1,1) + w[2] * (*Bi)(xsim+0-1+2,1));
-									*(pixbuf[LIGHTCONE_B_OFFSET+1][j]+pixbuf_size[j]+q) += w[0] * (0.5+w[1]) * ((1.-w[2]) * (*Bi)(xsim+0,1) + w[2] * (*Bi)(xsim+0+2,1));
-								}
-								if (w[2] > 0.5)
-								{
-									*(pixbuf[LIGHTCONE_B_OFFSET+2][j]+pixbuf_size[j]+q) = (1.-w[0]) * (1.-w[1]) * ((1.5-w[2]) * (*Bi)(xsim,2) + (w[2]-0.5) * (*Bi)(xsim+2,2));
-									*(pixbuf[LIGHTCONE_B_OFFSET+2][j]+pixbuf_size[j]+q) += (1.-w[0]) * w[1] * ((1.5-w[2]) * (*Bi)(xsim+1,2) + (w[2]-0.5) * (*Bi)(xsim+1+2,2));
-									*(pixbuf[LIGHTCONE_B_OFFSET+2][j]+pixbuf_size[j]+q) += w[0] * w[1] * ((1.5-w[2]) * (*Bi)(xsim+0+1,2) + (w[2]-0.5) * (*Bi)(xsim+0+1+2,2));
-									*(pixbuf[LIGHTCONE_B_OFFSET+2][j]+pixbuf_size[j]+q) += w[0] * (1.-w[1]) * ((1.5-w[2]) * (*Bi)(xsim+0,2) + (w[2]-0.5) * (*Bi)(xsim+0+2,2));
-								}
-								else
-								{
-									*(pixbuf[LIGHTCONE_B_OFFSET+2][j]+pixbuf_size[j]+q) = (1.-w[0]) * (1.-w[1]) * ((0.5+w[2]) * (*Bi)(xsim,2) + (0.5-w[2]) * (*Bi)(xsim-2,2));
-									*(pixbuf[LIGHTCONE_B_OFFSET+2][j]+pixbuf_size[j]+q) += (1.-w[0]) * w[1] * ((0.5+w[2]) * (*Bi)(xsim+1,2) + (0.5-w[2]) * (*Bi)(xsim+1-2,2));
-									*(pixbuf[LIGHTCONE_B_OFFSET+2][j]+pixbuf_size[j]+q) += w[0] * w[1] * ((0.5+w[2]) * (*Bi)(xsim+0+1,2) + (0.5-w[2]) * (*Bi)(xsim+0+1-2,2));
-									*(pixbuf[LIGHTCONE_B_OFFSET+2][j]+pixbuf_size[j]+q) += w[0] * (1.-w[1]) * ((0.5+w[2]) * (*Bi)(xsim+0,2) + (0.5-w[2]) * (*Bi)(xsim+0-2,2));
-								}
-								*(pixbuf[LIGHTCONE_B_OFFSET][j]+pixbuf_size[j]+q) /= a * a * sim.numpts;
-								*(pixbuf[LIGHTCONE_B_OFFSET+1][j]+pixbuf_size[j]+q) /= a * a * sim.numpts;
-								*(pixbuf[LIGHTCONE_B_OFFSET+2][j]+pixbuf_size[j]+q) /= a * a * sim.numpts;
-#endif
-							}
-							if (sim.out_lightcone[i] & MASK_HIJ)
-							{
-								*(pixbuf[LIGHTCONE_HIJ_OFFSET][j]+pixbuf_size[j]+q) = (1.-w[0]) * (1.-w[1]) * ((1.-w[2]) * (*Sij)(xsim,0,0) + w[2] * (*Sij)(xsim+2,0,0));
-								*(pixbuf[LIGHTCONE_HIJ_OFFSET][j]+pixbuf_size[j]+q) += w[0] * (1.-w[1]) * ((1.-w[2]) * (*Sij)(xsim+0,0,0) + w[2] * (*Sij)(xsim+0+2,0,0));
-								*(pixbuf[LIGHTCONE_HIJ_OFFSET][j]+pixbuf_size[j]+q) += w[0] * w[1] * ((1.-w[2]) * (*Sij)(xsim+0+1,0,0) + w[2] * (*Sij)(xsim+0+1+2,0,0));
-								*(pixbuf[LIGHTCONE_HIJ_OFFSET][j]+pixbuf_size[j]+q) += (1.-w[0]) * w[1] * ((1.-w[2]) * (*Sij)(xsim+1,0,0) + w[2] * (*Sij)(xsim+1+2,0,0));
-	
-								*(pixbuf[LIGHTCONE_HIJ_OFFSET+1][j]+pixbuf_size[j]+q) = (1.-w[2]) * 0.25 * ((*Sij)(xsim,0,1) + (1.-w[0]) * ((*Sij)(xsim-0,0,1) + (1.-w[1]) * (*Sij)(xsim-0-1,0,1) + w[1] * (*Sij)(xsim-0+1,0,1)) + w[0] * ((*Sij)(xsim+0,0,1) + (1.-w[1]) * (*Sij)(xsim+0-1,0,1) + w[1] * (*Sij)(xsim+0+1,0,1)) + (1.-w[1]) * (*Sij)(xsim-1,0,1) + w[1] * (*Sij)(xsim+1,0,1));
-								*(pixbuf[LIGHTCONE_HIJ_OFFSET+1][j]+pixbuf_size[j]+q) += w[2] * 0.25 * ((*Sij)(xsim+2,0,1) + (1.-w[0]) * ((*Sij)(xsim-0+2,0,1) + (1.-w[1]) * (*Sij)(xsim-0-1+2,0,1) + w[1] * (*Sij)(xsim-0+1+2,0,1)) + w[0] * ((*Sij)(xsim+0+2,0,1) + (1.-w[1]) * (*Sij)(xsim+0-1+2,0,1) + w[1] * (*Sij)(xsim+0+1+2,0,1)) + (1.-w[1]) * (*Sij)(xsim-1+2,0,1) + w[1] * (*Sij)(xsim+1+2,0,1));
-
-								*(pixbuf[LIGHTCONE_HIJ_OFFSET+2][j]+pixbuf_size[j]+q) = (1.-w[1]) * 0.25 * ((*Sij)(xsim,0,2) + (1.-w[0]) * ((*Sij)(xsim-0,0,2) + (1.-w[2]) * (*Sij)(xsim-0-2,0,2) + w[2] * (*Sij)(xsim-0+2,0,2)) + w[0] * ((*Sij)(xsim+0,0,2) + (1.-w[2]) * (*Sij)(xsim+0-2,0,2) + w[2] * (*Sij)(xsim+0+2,0,2)) + (1.-w[2]) * (*Sij)(xsim-2,0,2) + w[2] * (*Sij)(xsim+2,0,2));
-								*(pixbuf[LIGHTCONE_HIJ_OFFSET+2][j]+pixbuf_size[j]+q) += w[1] * 0.25 * ((*Sij)(xsim+1,0,2) + (1.-w[0]) * ((*Sij)(xsim-0+1,0,2) + (1.-w[2]) * (*Sij)(xsim-0+1-2,0,2) + w[2] * (*Sij)(xsim-0+1+2,0,2)) + w[0] * ((*Sij)(xsim+0+1,0,2) + (1.-w[2]) * (*Sij)(xsim+0+1-2,0,2) + w[2] * (*Sij)(xsim+0+1+2,0,2)) + (1.-w[2]) * (*Sij)(xsim+1-2,0,2) + w[2] * (*Sij)(xsim+1+2,0,2));
-							
-
-								*(pixbuf[LIGHTCONE_HIJ_OFFSET+3][j]+pixbuf_size[j]+q) = (1.-w[0]) * (1.-w[1]) * ((1.-w[2]) * (*Sij)(xsim,1,1) + w[2] * (*Sij)(xsim+2,1,1));
-								*(pixbuf[LIGHTCONE_HIJ_OFFSET+3][j]+pixbuf_size[j]+q) += w[0] * (1.-w[1]) * ((1.-w[2]) * (*Sij)(xsim+0,1,1) + w[2] * (*Sij)(xsim+0+2,1,1));
-								*(pixbuf[LIGHTCONE_HIJ_OFFSET+3][j]+pixbuf_size[j]+q) += w[0] * w[1] * ((1.-w[2]) * (*Sij)(xsim+0+1,1,1) + w[2] * (*Sij)(xsim+0+1+2,1,1));
-								*(pixbuf[LIGHTCONE_HIJ_OFFSET+3][j]+pixbuf_size[j]+q) += (1.-w[0]) * w[1] * ((1.-w[2]) * (*Sij)(xsim+1,1,1) + w[2] * (*Sij)(xsim+1+2,1,1));
-
-								*(pixbuf[LIGHTCONE_HIJ_OFFSET+4][j]+pixbuf_size[j]+q) = (1.-w[0]) * 0.25 * ((*Sij)(xsim,1,2) + (1.-w[1]) * ((*Sij)(xsim-1,1,2) + (1.-w[2]) * (*Sij)(xsim-1-2,1,2) + w[2] * (*Sij)(xsim-1+2,1,2)) + w[1] * ((*Sij)(xsim+1,1,2) + (1.-w[2]) * (*Sij)(xsim+1-2,1,2) + w[2] * (*Sij)(xsim+1+2,1,2)) + (1.-w[2]) * (*Sij)(xsim-2,1,2) + w[2] * (*Sij)(xsim+2,1,2));
-								*(pixbuf[LIGHTCONE_HIJ_OFFSET+4][j]+pixbuf_size[j]+q) += w[0] * 0.25 * ((*Sij)(xsim+0,1,2) + (1.-w[1]) * ((*Sij)(xsim+0-1,1,2) + (1.-w[2]) * (*Sij)(xsim+0-1-2,1,2) + w[2] * (*Sij)(xsim+0-1+2,1,2)) + w[1] * ((*Sij)(xsim+0+1,1,2) + (1.-w[2]) * (*Sij)(xsim+0+1-2,1,2) + w[2] * (*Sij)(xsim+0+1+2,1,2)) + (1.-w[2]) * (*Sij)(xsim+0-2,1,2) + w[2] * (*Sij)(xsim+0+2,1,2));
-							}
-						}
-						else
-						{
-							if (sim.out_lightcone[i] & MASK_PHI)
-								*(pixbuf[LIGHTCONE_PHI_OFFSET][j]+pixbuf_size[j]+q) = 0;
-							if (sim.out_lightcone[i] & MASK_CHI)
-								*(pixbuf[LIGHTCONE_CHI_OFFSET][j]+pixbuf_size[j]+q) = 0;
-							if (sim.out_lightcone[i] & MASK_B)
-							{
-								*(pixbuf[LIGHTCONE_B_OFFSET][j]+pixbuf_size[j]+q) = 0;
-								*(pixbuf[LIGHTCONE_B_OFFSET+1][j]+pixbuf_size[j]+q) = 0;
-								*(pixbuf[LIGHTCONE_B_OFFSET+2][j]+pixbuf_size[j]+q) = 0;
-							}
-							if (sim.out_lightcone[i] & MASK_HIJ)
-							{
-								*(pixbuf[LIGHTCONE_HIJ_OFFSET][j]+pixbuf_size[j]+q) = 0;
-								*(pixbuf[LIGHTCONE_HIJ_OFFSET+1][j]+pixbuf_size[j]+q) = 0;
-								*(pixbuf[LIGHTCONE_HIJ_OFFSET+2][j]+pixbuf_size[j]+q) = 0;
-								*(pixbuf[LIGHTCONE_HIJ_OFFSET+3][j]+pixbuf_size[j]+q) = 0;
-								*(pixbuf[LIGHTCONE_HIJ_OFFSET+4][j]+pixbuf_size[j]+q) = 0;
-							}
-						}
-						
-						q++;
-					} // q-loop */
 					
 					pixbuf_size[j] += pixbatch_size[pixbatch_type].back();
 					
@@ -1387,13 +1308,13 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 
 				if (packmap[0] != nullptr)
 				{
-					cudaFree(packmap[0]);
+					healpix_cuda_check(cudaFree(packmap[0]), "pixel packmap free");
 					packmap[0] = nullptr;
 				}
 
 				if (packmap[1] != nullptr)
 				{
-					cudaFree(packmap[1]);
+					healpix_cuda_check(cudaFree(packmap[1]), "pixel packmap free");
 					packmap[1] = nullptr;
 				}
 
@@ -1408,7 +1329,9 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 				if (p > 0)
 				{
 					nvtxRangePushA("MPI communication (pixel buffers)");
-					commbuf = (Real *) malloc(sizeof(Real) * p);
+					healpix_cuda_malloc(&commbuf, p);
+					bool commbuf_accumulation_pending = false;
+					bool edge_pixbuf_accumulation_pending = false;
 					
 					for (j = 0; j < LIGHTCONE_MAX_FIELDS; j++)
 					{
@@ -1418,71 +1341,33 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 							{
 								if (pixbuf_size[0]+pixbuf_size[1]+pixbuf_size[2] > 0)
 								{
-									if (pixbuf_size[0] > 0)
-										memcpy((void *) commbuf, (void *) pixbuf[j][0], pixbuf_size[0] * sizeof(Real));
-									if (pixbuf_size[1] > 0)
-										memcpy((void *) (commbuf+pixbuf_size[0]), (void *) pixbuf[j][1], pixbuf_size[1] * sizeof(Real));
-									if (pixbuf_size[2] > 0)
-										memcpy((void *) (commbuf+pixbuf_size[0]+pixbuf_size[1]), (void *) pixbuf[j][2], pixbuf_size[2] * sizeof(Real));
+									healpix_sync_if(commbuf_accumulation_pending, edge_pixbuf_accumulation_pending, "pixel buffer accumulation");
+									healpix_pack3(commbuf, pixbuf[j][0], pixbuf_size[0], pixbuf[j][1], pixbuf_size[1], pixbuf[j][2], pixbuf_size[2]);
 									parallel.send_dim0<Real>(commbuf, pixbuf_size[0]+pixbuf_size[1]+pixbuf_size[2], (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
 								}
 								if (pixbuf_size[3]+pixbuf_size[4]+pixbuf_size[5] > 0)
 								{
+									healpix_sync_if(commbuf_accumulation_pending, edge_pixbuf_accumulation_pending, "pixel buffer accumulation");
 									parallel.receive_dim0<Real>(commbuf, pixbuf_size[3]+pixbuf_size[4]+pixbuf_size[5], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
-
-									#pragma omp parallel sections
-									{
-										#pragma omp section
-										{
-											for (int64_t qq = 0; qq < pixbuf_size[3]; qq++)
-												*(pixbuf[j][3]+qq) += commbuf[qq];
-										}
-										#pragma omp section
-										{
-											for (int64_t qq = 0; qq < pixbuf_size[4]; qq++)
-												*(pixbuf[j][4]+qq) += commbuf[pixbuf_size[3]+qq];
-										}
-										#pragma omp section
-										{
-											for (int64_t qq = 0; qq < pixbuf_size[5]; qq++)
-												*(pixbuf[j][5]+qq) += commbuf[pixbuf_size[3]+pixbuf_size[4]+qq];
-										}
-									}
+									healpix_add_packed3(pixbuf[j][3], pixbuf_size[3], pixbuf[j][4], pixbuf_size[4], pixbuf[j][5], pixbuf_size[5], commbuf);
+									commbuf_accumulation_pending = true;
+									edge_pixbuf_accumulation_pending = true;
 								}
 							}
 							else
 							{
 								if (pixbuf_size[3]+pixbuf_size[4]+pixbuf_size[5] > 0 && parallel.grid_size()[0] > 2)
 								{
+									healpix_sync_if(commbuf_accumulation_pending, edge_pixbuf_accumulation_pending, "pixel buffer accumulation");
 									parallel.receive_dim0<Real>(commbuf, pixbuf_size[3]+pixbuf_size[4]+pixbuf_size[5], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
-
-									#pragma omp parallel sections
-									{
-										#pragma omp section
-										{
-											for (int64_t qq = 0; qq < pixbuf_size[3]; qq++)
-												*(pixbuf[j][3]+qq) += commbuf[qq];
-										}
-										#pragma omp section
-										{
-											for (int64_t qq = 0; qq < pixbuf_size[4]; qq++)
-												*(pixbuf[j][4]+qq) += commbuf[pixbuf_size[3]+qq];
-										}
-										#pragma omp section
-										{
-											for (int64_t qq = 0; qq < pixbuf_size[5]; qq++)
-												*(pixbuf[j][5]+qq) += commbuf[pixbuf_size[3]+pixbuf_size[4]+qq];
-										}
-									}
+									healpix_add_packed3(pixbuf[j][3], pixbuf_size[3], pixbuf[j][4], pixbuf_size[4], pixbuf[j][5], pixbuf_size[5], commbuf);
+									commbuf_accumulation_pending = true;
+									edge_pixbuf_accumulation_pending = true;
 								}
 								if (pixbuf_size[0]+pixbuf_size[1]+pixbuf_size[2] > 0)
 								{
-									if (pixbuf_size[0] > 0)
-										memcpy((void *) commbuf, (void *) pixbuf[j][0], pixbuf_size[0] * sizeof(Real));
-									if (pixbuf_size[1] > 0)
-										memcpy((void *) (commbuf+pixbuf_size[0]), (void *) pixbuf[j][1], pixbuf_size[1] * sizeof(Real));
-									if (pixbuf_size[2] > 0)
-										memcpy((void *) (commbuf+pixbuf_size[0]+pixbuf_size[1]), (void *) pixbuf[j][2], pixbuf_size[2] * sizeof(Real));
+									healpix_sync_if(commbuf_accumulation_pending, edge_pixbuf_accumulation_pending, "pixel buffer accumulation");
+									healpix_pack3(commbuf, pixbuf[j][0], pixbuf_size[0], pixbuf[j][1], pixbuf_size[1], pixbuf[j][2], pixbuf_size[2]);
 									parallel.send_dim0<Real>(commbuf, pixbuf_size[0]+pixbuf_size[1]+pixbuf_size[2], (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
 								}
 							}
@@ -1491,71 +1376,33 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 							{
 								if (pixbuf_size[6]+pixbuf_size[7]+pixbuf_size[8] > 0)
 								{
-									if (pixbuf_size[6] > 0)
-										memcpy((void *) commbuf, (void *) pixbuf[j][6], pixbuf_size[6] * sizeof(Real));
-									if (pixbuf_size[7] > 0)
-										memcpy((void *) (commbuf+pixbuf_size[6]), (void *) pixbuf[j][7], pixbuf_size[7] * sizeof(Real));
-									if (pixbuf_size[8] > 0)
-										memcpy((void *) (commbuf+pixbuf_size[6]+pixbuf_size[7]), (void *) pixbuf[j][8], pixbuf_size[8] * sizeof(Real));
+									healpix_sync_if(commbuf_accumulation_pending, edge_pixbuf_accumulation_pending, "pixel buffer accumulation");
+									healpix_pack3(commbuf, pixbuf[j][6], pixbuf_size[6], pixbuf[j][7], pixbuf_size[7], pixbuf[j][8], pixbuf_size[8]);
 									parallel.send_dim0<Real>(commbuf, pixbuf_size[6]+pixbuf_size[7]+pixbuf_size[8], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
 								}
 								if (pixbuf_size[3]+pixbuf_size[4]+pixbuf_size[5] > 0 && parallel.grid_size()[0] > 2)
 								{
+									healpix_sync_if(commbuf_accumulation_pending, edge_pixbuf_accumulation_pending, "pixel buffer accumulation");
 									parallel.receive_dim0<Real>(commbuf, pixbuf_size[3]+pixbuf_size[4]+pixbuf_size[5], (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
-
-									#pragma omp parallel sections
-									{
-										#pragma omp section
-										{
-											for (int64_t qq = 0; qq < pixbuf_size[3]; qq++)
-												*(pixbuf[j][3]+qq) += commbuf[qq];
-										}
-										#pragma omp section
-										{
-											for (int64_t qq = 0; qq < pixbuf_size[4]; qq++)
-												*(pixbuf[j][4]+qq) += commbuf[pixbuf_size[3]+qq];
-										}
-										#pragma omp section
-										{
-											for (int64_t qq = 0; qq < pixbuf_size[5]; qq++)
-												*(pixbuf[j][5]+qq) += commbuf[pixbuf_size[3]+pixbuf_size[4]+qq];
-										}
-									}
+									healpix_add_packed3(pixbuf[j][3], pixbuf_size[3], pixbuf[j][4], pixbuf_size[4], pixbuf[j][5], pixbuf_size[5], commbuf);
+									commbuf_accumulation_pending = true;
+									edge_pixbuf_accumulation_pending = true;
 								}
 							}
 							else
 							{
 								if (pixbuf_size[3]+pixbuf_size[4]+pixbuf_size[5] > 0)
 								{
+									healpix_sync_if(commbuf_accumulation_pending, edge_pixbuf_accumulation_pending, "pixel buffer accumulation");
 									parallel.receive_dim0<Real>(commbuf, pixbuf_size[3]+pixbuf_size[4]+pixbuf_size[5], (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
-
-									#pragma omp parallel sections
-									{
-										#pragma omp section
-										{
-											for (int64_t qq = 0; qq < pixbuf_size[3]; qq++)
-												*(pixbuf[j][3]+qq) += commbuf[qq];
-										}
-										#pragma omp section
-										{
-											for (int64_t qq = 0; qq < pixbuf_size[4]; qq++)
-												*(pixbuf[j][4]+qq) += commbuf[pixbuf_size[3]+qq];
-										}
-										#pragma omp section
-										{
-											for (int64_t qq = 0; qq < pixbuf_size[5]; qq++)
-												*(pixbuf[j][5]+qq) += commbuf[pixbuf_size[3]+pixbuf_size[4]+qq];
-										}
-									}
+									healpix_add_packed3(pixbuf[j][3], pixbuf_size[3], pixbuf[j][4], pixbuf_size[4], pixbuf[j][5], pixbuf_size[5], commbuf);
+									commbuf_accumulation_pending = true;
+									edge_pixbuf_accumulation_pending = true;
 								}
 								if (pixbuf_size[6]+pixbuf_size[7]+pixbuf_size[8] > 0)
 								{
-									if (pixbuf_size[6] > 0)
-										memcpy((void *) commbuf, (void *) pixbuf[j][6], pixbuf_size[6] * sizeof(Real));
-									if (pixbuf_size[7] > 0)
-										memcpy((void *) (commbuf+pixbuf_size[6]), (void *) pixbuf[j][7], pixbuf_size[7] * sizeof(Real));
-									if (pixbuf_size[8] > 0)
-										memcpy((void *) (commbuf+pixbuf_size[6]+pixbuf_size[7]), (void *) pixbuf[j][8], pixbuf_size[8] * sizeof(Real));
+									healpix_sync_if(commbuf_accumulation_pending, edge_pixbuf_accumulation_pending, "pixel buffer accumulation");
+									healpix_pack3(commbuf, pixbuf[j][6], pixbuf_size[6], pixbuf[j][7], pixbuf_size[7], pixbuf[j][8], pixbuf_size[8]);
 									parallel.send_dim0<Real>(commbuf, pixbuf_size[6]+pixbuf_size[7]+pixbuf_size[8], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
 								}
 							}
@@ -1563,68 +1410,69 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 							if (parallel.grid_rank()[1] % 2 == 0)
 							{
 								if (pixbuf_size[3] > 0)
+								{
+									healpix_sync_if(edge_pixbuf_accumulation_pending, commbuf_accumulation_pending, "pixel buffer accumulation");
 									parallel.send_dim1<Real>(pixbuf[j][3], pixbuf_size[3], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
+								}
 								if (pixbuf_size[4] > 0)
 								{
+									healpix_sync_if(commbuf_accumulation_pending, edge_pixbuf_accumulation_pending, "pixel buffer accumulation");
 									parallel.receive_dim1<Real>(commbuf, pixbuf_size[4], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
-
-									#pragma omp parallel for
-									for (int64_t qq = 0; qq < pixbuf_size[4]; qq++)
-									{
-										*(pixbuf[j][4]+qq) += commbuf[qq];
-									}
+									healpix_add(pixbuf[j][4], commbuf, pixbuf_size[4]);
+									commbuf_accumulation_pending = true;
 								}
 							}
 							else
 							{
 								if (pixbuf_size[4] > 0 && parallel.grid_size()[1] > 2)
 								{
+									healpix_sync_if(commbuf_accumulation_pending, edge_pixbuf_accumulation_pending, "pixel buffer accumulation");
 									parallel.receive_dim1<Real>(commbuf, pixbuf_size[4], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
-
-									#pragma omp parallel for
-									for (int64_t qq = 0; qq < pixbuf_size[4]; qq++)
-									{
-										*(pixbuf[j][4]+qq) += commbuf[qq];
-									}
+									healpix_add(pixbuf[j][4], commbuf, pixbuf_size[4]);
+									commbuf_accumulation_pending = true;
 								}
 								if (pixbuf_size[3] > 0)
+								{
+									healpix_sync_if(edge_pixbuf_accumulation_pending, commbuf_accumulation_pending, "pixel buffer accumulation");
 									parallel.send_dim1<Real>(pixbuf[j][3], pixbuf_size[3], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
+								}
 							}
 								
 							if (parallel.grid_rank()[1] % 2 == 0)
 							{
 								if (pixbuf_size[5] > 0)
+								{
+									healpix_sync_if(edge_pixbuf_accumulation_pending, commbuf_accumulation_pending, "pixel buffer accumulation");
 									parallel.send_dim1<Real>(pixbuf[j][5], pixbuf_size[5], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
+								}
 								if (pixbuf_size[4] > 0 && parallel.grid_size()[1] > 2)
 								{
+									healpix_sync_if(commbuf_accumulation_pending, edge_pixbuf_accumulation_pending, "pixel buffer accumulation");
 									parallel.receive_dim1<Real>(commbuf, pixbuf_size[4], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
-
-									#pragma omp parallel for
-									for (int64_t qq = 0; qq < pixbuf_size[4]; qq++)
-									{
-										*(pixbuf[j][4]+qq) += commbuf[qq];
-									}
+									healpix_add(pixbuf[j][4], commbuf, pixbuf_size[4]);
+									commbuf_accumulation_pending = true;
 								}
 							}
 							else
 							{
 								if (pixbuf_size[4] > 0)
 								{
+									healpix_sync_if(commbuf_accumulation_pending, edge_pixbuf_accumulation_pending, "pixel buffer accumulation");
 									parallel.receive_dim1<Real>(commbuf, pixbuf_size[4], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
-
-									#pragma omp parallel for
-									for (int64_t qq = 0; qq < pixbuf_size[4]; qq++)
-									{
-										*(pixbuf[j][4]+qq) += commbuf[qq];
-									}
+									healpix_add(pixbuf[j][4], commbuf, pixbuf_size[4]);
+									commbuf_accumulation_pending = true;
 								}
 								if (pixbuf_size[5] > 0)
+								{
+									healpix_sync_if(edge_pixbuf_accumulation_pending, commbuf_accumulation_pending, "pixel buffer accumulation");
 									parallel.send_dim1<Real>(pixbuf[j][5], pixbuf_size[5], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
+								}
 							}
 						}
 					}
 					
-					free(commbuf);
+					healpix_sync_any(commbuf_accumulation_pending, edge_pixbuf_accumulation_pending, "pixel buffer accumulation");
+					healpix_cuda_check(cudaFree(commbuf), "pixel communication buffer free");
 					nvtxRangePop();
 				}
 				
@@ -1818,7 +1666,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 							for (j = 0; j < LIGHTCONE_MAX_FIELDS; j++)
 							{
 								if (pixbuf[j][4] != NULL && pixbatch_size[pixbatch_type].back() > 0)
-									memcpy((void *) (outbuf[j]+offset2), (void *) (pixbuf[j][4]+pix2), n*pixbatch_size[pixbatch_type].back()*maphdr.precision);
+									healpix_cuda_check(cudaMemcpy((void *) (outbuf[j]+offset2), (void *) (pixbuf[j][4]+pix2), n*pixbatch_size[pixbatch_type].back()*maphdr.precision, cudaMemcpyDeviceToHost), "write buffer copy");
 							}
 							pix += n;
 							pix2 += n*pixbatch_size[pixbatch_type].back();
@@ -1947,7 +1795,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 			{
 				if (pixbuf[j/9][j%9] != NULL)
 				{
-					free(pixbuf[j/9][j%9]);
+					healpix_cuda_check(cudaFree(pixbuf[j/9][j%9]), "pixel buffer free");
 					pixbuf[j/9][j%9] = NULL;
 				}
 			}
@@ -3359,4 +3207,3 @@ perfParticles_gevolution<part_simple,part_simple_info> * pcls_cdm, perfParticles
 }
 
 #endif
-
