@@ -49,12 +49,6 @@
 #include "gevolution.hpp"
 #include "ic_basic.hpp"
 #include "ic_read.hpp"
-#ifdef ICGEN_PREVOLUTION
-#include "ic_prevolution.hpp"
-#endif
-#ifdef ICGEN_FALCONIC
-#include "fcn/togevolution.hpp"
-#endif
 #ifdef ICGEN_RELIC
 #include "ic_relic.hpp"
 #endif
@@ -328,14 +322,6 @@ int main(int argc, char **argv)
 #ifdef ICGEN_RELIC
 	else if (ic.generator == ICGEN_RELIC)
 		generateIC_relic(sim, ic, cosmo, fourpiG, &pcls_cdm, &pcls_b, pcls_ncdm, maxvel, &phi, &chi, &Bi, &source, &Sij, zetaFT, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij, params, numparam);
-#endif
-#ifdef ICGEN_PREVOLUTION
-	else if (ic.generator == ICGEN_PREVOLUTION)
-		generateIC_prevolution(sim, ic, cosmo, fourpiG, a, tau, dtau, dtau_old, &pcls_cdm, &pcls_b, pcls_ncdm, maxvel, &phi, &chi, &Bi, &source, &Sij, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij, params, numparam);
-#endif
-#ifdef ICGEN_FALCONIC
-	else if (ic.generator == ICGEN_FALCONIC)
-		maxvel[0] = generateIC_FalconIC(sim, ic, cosmo, fourpiG, dtau, &pcls_cdm, pcls_ncdm, maxvel+1, &phi, &source, &chi, &Bi, &source, &Sij, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_source, &plan_chi, &plan_Bi, &plan_source, &plan_Sij);
 #endif
 	else
 	{
@@ -1113,4 +1099,3 @@ delete [] IDbacklog;
 
 	return 0;
 }
-

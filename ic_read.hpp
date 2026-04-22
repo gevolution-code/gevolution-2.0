@@ -178,6 +178,8 @@ void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fou
 	maxvel[0] = pcls_cdm->updateVel(update_q_functor(), 0., &phi, 1, f_params);
 
 	COUT << " max. |q|/(m a) for cdm particles after IC read: " << maxvel[0] << endl;
+
+	plan_source->preallocate(pcls_cdm->getTotalCapacity() * 3L * sizeof(Real));
 	
 	if (sim.baryon_flag == 1)
 	{

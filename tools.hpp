@@ -4,9 +4,9 @@
 // 
 // Collection of analysis tools for gevolution
 //
-// Author: Julian Adamek (Université de Genève & Observatoire de Paris & Queen Mary University of London & Universität Zürich)
+// Author: Julian Adamek (Université de Genève & Observatoire de Paris & Queen Mary University of London & Universität Zürich & ETH Zürich)
 //
-// Last modified: February 2025
+// Last modified: April 2026
 //
 //////////////////////////
 
@@ -14,6 +14,10 @@
 #define TOOLS_HEADER
 
 #include "lattice_loop.hpp"
+#include <vector>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 #ifndef Cplx
 #define Cplx Imag
@@ -24,6 +28,11 @@
 
 using namespace std;
 using namespace LATfield2;
+
+static inline Real realCrossProduct(Cplx & a, Cplx & b)
+{
+	return a.real() * b.real() + a.imag() * b.imag();
+}
 
 
 #ifdef FFT3D
@@ -54,14 +63,24 @@ using namespace LATfield2;
 
 void extractCrossSpectrum(Field<Cplx> & fld1FT, Field<Cplx> & fld2FT, Real * kbin, Real * power, Real * kscatter, Real * pscatter, int * occupation, const int numbins, const bool deconvolve = true, const int ktype = KTYPE_LINEAR, const int comp1 = -1, const int comp2 = -1)
 {
-	int weight, bin;
 	const int linesize = fld1FT.lattice().size(1);
 	Real * typek2;
 	Real * sinc;
-	Real k2max, k2, s;
+	Real k2max, kmax;
 	rKSite k(fld1FT.lattice());
-	Cplx p;
+	const int realBufferSize = 4 * numbins;
+	const int kbinOffset = 0;
+	const int kscatterOffset = numbins;
+	const int powerOffset = 2 * numbins;
+	const int pscatterOffset = 3 * numbins;
+	int numThreads = 1;
+
+	nvtxRangePushA("extractCrossSpectrum");
 	
+#ifdef _OPENMP
+	numThreads = omp_get_max_threads();
+#endif
+
 	if (linesize <= STACK_ALLOCATION_LIMIT)
 	{
 		typek2 = (Real *) alloca(linesize * sizeof(Real));
@@ -122,23 +141,28 @@ void extractCrossSpectrum(Field<Cplx> & fld1FT, Field<Cplx> & fld2FT, Real * kbi
 	}
 	
 	k2max = 3. * typek2[linesize/2];
+	kmax = sqrt(k2max);
 	
-	for (int i = 0; i < numbins; i++)
-	{
-		kbin[i] = 0.;
-		power[i] = 0.;
-		kscatter[i] = 0.;
-		pscatter[i] = 0.;
-		occupation[i] = 0;
-	}
+	vector<Real> threadReal((size_t) numThreads * (size_t) realBufferSize, 0.);
+	vector<int> threadOccupation((size_t) numThreads * (size_t) numbins, 0);
+	vector<Real> commReal(realBufferSize, 0.);
+	vector<int> commOccupation(numbins, 0);
 	
 //	for (k.first(); k.test(); k.next())
 //	{
-#pragma omp parallel for collapse(2) default(shared) firstprivate(k) private(weight, p, k2, s, bin)
+	nvtxRangePushA("extractCrossSpectrum: local k-loop");
+#pragma omp parallel for collapse(2) default(shared) firstprivate(k)
 	for (int ii = 0; ii < fld1FT.lattice().sizeLocal(1); ii++)
 	{
 		for (int jj = 0; jj < fld1FT.lattice().sizeLocal(2); jj++)
 		{
+			int tid = 0;
+#ifdef _OPENMP
+			tid = omp_get_thread_num();
+#endif
+			Real * localReal = threadReal.data() + (size_t) tid * (size_t) realBufferSize;
+			int * localOccupation = threadOccupation.data() + (size_t) tid * (size_t) numbins;
+
 			if (!k.setCoord(0, jj + fld1FT.lattice().coordSkip()[0], ii + fld1FT.lattice().coordSkip()[1]))
 			{
 				throw std::runtime_error("Error in projectFTscalar: Could not set coordinates.");
@@ -146,6 +170,9 @@ void extractCrossSpectrum(Field<Cplx> & fld1FT, Field<Cplx> & fld2FT, Real * kbi
 
 			for (int z = 0; z < fld1FT.lattice().sizeLocal(0); z++)
 			{
+				int weight, bin;
+				Real k2, sqrtk2, s, p;
+
 				if (k.coord(0) == 0 && k.coord(1) == 0 && k.coord(2) == 0)
 				{
 					k.next();
@@ -164,95 +191,125 @@ void extractCrossSpectrum(Field<Cplx> & fld1FT, Field<Cplx> & fld2FT, Real * kbi
 				
 				if (comp1 >= 0 && comp2 >= 0 && comp1 < fld1FT.components() && comp2 < fld2FT.components())
 				{
-					p = fld1FT(k, comp1) * fld2FT(k, comp2).conj();
+					p = realCrossProduct(fld1FT(k, comp1), fld2FT(k, comp2));
 				}
 				else if (fld1FT.symmetry() == LATfield2::symmetric)
 				{
-					p = fld1FT(k, 0, 1) * fld2FT(k, 0, 1).conj();
-					p += fld1FT(k, 0, 2) * fld2FT(k, 0, 2).conj();
-					p += fld1FT(k, 1, 2) * fld2FT(k, 1, 2).conj();
+					p = realCrossProduct(fld1FT(k, 0, 1), fld2FT(k, 0, 1));
+					p += realCrossProduct(fld1FT(k, 0, 2), fld2FT(k, 0, 2));
+					p += realCrossProduct(fld1FT(k, 1, 2), fld2FT(k, 1, 2));
 					p *= 2.;
-					p += fld1FT(k, 0, 0) * fld2FT(k, 0, 0).conj();
-					p += fld1FT(k, 1, 1) * fld2FT(k, 1, 1).conj();
-					p += fld1FT(k, 2, 2) * fld2FT(k, 2, 2).conj();
+					p += realCrossProduct(fld1FT(k, 0, 0), fld2FT(k, 0, 0));
+					p += realCrossProduct(fld1FT(k, 1, 1), fld2FT(k, 1, 1));
+					p += realCrossProduct(fld1FT(k, 2, 2), fld2FT(k, 2, 2));
 				}
 				else
 				{
-					p = Cplx(0., 0.);
+					p = 0.;
 					for (int i = 0; i < fld1FT.components(); i++)
-						p += fld1FT(k, i) * fld2FT(k, i).conj();
+						p += realCrossProduct(fld1FT(k, i), fld2FT(k, i));
 				}
 
-				bin = (int) floor((double) ((Real) numbins * sqrt(k2 / k2max)));
+				sqrtk2 = sqrt(k2);
+				bin = (int) floor((double) ((Real) numbins * sqrtk2 / kmax));
 				if (bin < numbins) 
 				{
-					#pragma omp atomic
-					kbin[bin] += weight * sqrt(k2);
-					#pragma omp atomic			
-					kscatter[bin] += weight * k2;
-					#pragma omp atomic
-					power[bin] += weight * p.real() * k2 * sqrt(k2) / s;
-					#pragma omp atomic
-					pscatter[bin] += weight * p.real() * p.real() * k2 * k2 * k2 / s / s;
-					#pragma omp atomic
-					occupation[bin] += weight;
+					Real weightedPower = (Real) weight * p * k2 * sqrtk2 / s;
+					Real p2 = p * p;
+					Real k6 = k2 * k2 * k2;
+
+					localReal[kbinOffset + bin] += weight * sqrtk2;
+					localReal[kscatterOffset + bin] += weight * k2;
+					localReal[powerOffset + bin] += weightedPower;
+					localReal[pscatterOffset + bin] += weight * p2 * k6 / s / s;
+					localOccupation[bin] += weight;
 				}
 
 				k.next();
 			}
 		}
 	}
-	
+	nvtxRangePop();
+
 	if (linesize > STACK_ALLOCATION_LIMIT)
 	{
 		free(typek2);
 		free(sinc);
 	}
 
+#pragma omp parallel for
+	for (int bin = 0; bin < numbins; bin++)
+	{
+		Real kbinSum = 0.;
+		Real kscatterSum = 0.;
+		Real powerSum = 0.;
+		Real pscatterSum = 0.;
+		int occupationSum = 0;
+
+		for (int tid = 0; tid < numThreads; tid++)
+		{
+			Real * localReal = threadReal.data() + (size_t) tid * (size_t) realBufferSize;
+			int * localOccupation = threadOccupation.data() + (size_t) tid * (size_t) numbins;
+
+			kbinSum += localReal[kbinOffset + bin];
+			kscatterSum += localReal[kscatterOffset + bin];
+			powerSum += localReal[powerOffset + bin];
+			pscatterSum += localReal[pscatterOffset + bin];
+			occupationSum += localOccupation[bin];
+		}
+
+		commReal[kbinOffset + bin] = kbinSum;
+		commReal[kscatterOffset + bin] = kscatterSum;
+		commReal[powerOffset + bin] = powerSum;
+		commReal[pscatterOffset + bin] = pscatterSum;
+		commOccupation[bin] = occupationSum;
+	}
+
+	nvtxRangePushA("extractCrossSpectrum: MPI reduction");
 	if (parallel.isRoot())
 	{
 #ifdef SINGLE
-		MPI_Reduce(MPI_IN_PLACE, (void *) kbin, numbins, MPI_FLOAT, MPI_SUM, 0, parallel.lat_world_comm());
-		MPI_Reduce(MPI_IN_PLACE, (void *) kscatter, numbins, MPI_FLOAT, MPI_SUM, 0, parallel.lat_world_comm());
-		MPI_Reduce(MPI_IN_PLACE, (void *) power, numbins, MPI_FLOAT, MPI_SUM, 0, parallel.lat_world_comm());
-		MPI_Reduce(MPI_IN_PLACE, (void *) pscatter, numbins, MPI_FLOAT, MPI_SUM, 0, parallel.lat_world_comm());
+		MPI_Reduce(MPI_IN_PLACE, (void *) commReal.data(), realBufferSize, MPI_FLOAT, MPI_SUM, 0, parallel.lat_world_comm());
 #else
-		MPI_Reduce(MPI_IN_PLACE, (void *) kbin, numbins, MPI_DOUBLE, MPI_SUM, 0, parallel.lat_world_comm());
-		MPI_Reduce(MPI_IN_PLACE, (void *) kscatter, numbins, MPI_DOUBLE, MPI_SUM, 0, parallel.lat_world_comm());
-		MPI_Reduce(MPI_IN_PLACE, (void *) power, numbins, MPI_DOUBLE, MPI_SUM, 0, parallel.lat_world_comm());
-		MPI_Reduce(MPI_IN_PLACE, (void *) pscatter, numbins, MPI_DOUBLE, MPI_SUM, 0, parallel.lat_world_comm());
+		MPI_Reduce(MPI_IN_PLACE, (void *) commReal.data(), realBufferSize, MPI_DOUBLE, MPI_SUM, 0, parallel.lat_world_comm());
 #endif
-		MPI_Reduce(MPI_IN_PLACE, (void *) occupation, numbins, MPI_INT, MPI_SUM, 0, parallel.lat_world_comm());
-
-#pragma omp parallel for
-		for (int i = 0; i < numbins; i++)
-		{
-			if (occupation[i] > 0)
-			{
-				kscatter[i] = sqrt(kscatter[i] * occupation[i] - kbin[i] * kbin[i]) / occupation[i];
-				if (!isfinite(kscatter[i])) kscatter[i] = 0.;
-				kbin[i] = kbin[i] / occupation[i];
-				power[i] /= occupation[i];
-				pscatter[i] = sqrt(pscatter[i] / occupation[i] - power[i] * power[i]);
-				if (!isfinite(pscatter[i])) pscatter[i] = 0.;
-			}
-		}
+		MPI_Reduce(MPI_IN_PLACE, (void *) commOccupation.data(), numbins, MPI_INT, MPI_SUM, 0, parallel.lat_world_comm());
 	}
 	else
 	{
 #ifdef SINGLE
-		MPI_Reduce((void *) kbin, NULL, numbins, MPI_FLOAT, MPI_SUM, 0, parallel.lat_world_comm());
-		MPI_Reduce((void *) kscatter, NULL, numbins, MPI_FLOAT, MPI_SUM, 0, parallel.lat_world_comm());
-		MPI_Reduce((void *) power, NULL, numbins, MPI_FLOAT, MPI_SUM, 0, parallel.lat_world_comm());
-		MPI_Reduce((void *) pscatter, NULL, numbins, MPI_FLOAT, MPI_SUM, 0, parallel.lat_world_comm());
+		MPI_Reduce((void *) commReal.data(), NULL, realBufferSize, MPI_FLOAT, MPI_SUM, 0, parallel.lat_world_comm());
 #else
-		MPI_Reduce((void *) kbin, NULL, numbins, MPI_DOUBLE, MPI_SUM, 0, parallel.lat_world_comm());
-		MPI_Reduce((void *) kscatter, NULL, numbins, MPI_DOUBLE, MPI_SUM, 0, parallel.lat_world_comm());
-		MPI_Reduce((void *) power, NULL, numbins, MPI_DOUBLE, MPI_SUM, 0, parallel.lat_world_comm());
-		MPI_Reduce((void *) pscatter, NULL, numbins, MPI_DOUBLE, MPI_SUM, 0, parallel.lat_world_comm());
+		MPI_Reduce((void *) commReal.data(), NULL, realBufferSize, MPI_DOUBLE, MPI_SUM, 0, parallel.lat_world_comm());
 #endif
-		MPI_Reduce((void *) occupation, NULL, numbins, MPI_INT, MPI_SUM, 0, parallel.lat_world_comm());
+		MPI_Reduce((void *) commOccupation.data(), NULL, numbins, MPI_INT, MPI_SUM, 0, parallel.lat_world_comm());
 	}
+	nvtxRangePop();
+
+#pragma omp parallel for
+	for (int i = 0; i < numbins; i++)
+	{
+		occupation[i] = commOccupation[i];
+		if (occupation[i] > 0)
+		{
+			kbin[i] = commReal[kbinOffset + i];
+			kscatter[i] = sqrt(commReal[kscatterOffset + i] * occupation[i] - kbin[i] * kbin[i]) / occupation[i];
+			if (!isfinite(kscatter[i])) kscatter[i] = 0.;
+			kbin[i] /= occupation[i];
+			power[i] = commReal[powerOffset + i] / occupation[i];
+			pscatter[i] = sqrt(commReal[pscatterOffset + i] / occupation[i] - power[i] * power[i]);
+			if (!isfinite(pscatter[i])) pscatter[i] = 0.;
+		}
+		else
+		{
+			kbin[i] = 0.;
+			power[i] = 0.;
+			kscatter[i] = 0.;
+			pscatter[i] = 0.;
+		}
+	}
+
+	nvtxRangePop();
 }
 
 
@@ -311,6 +368,7 @@ void extractPowerSpectrum(Field<Cplx> & fldFT, Real * kbin, Real * power, Real *
 
 void writePowerSpectrum(Real * kbin, Real * power, Real * kscatter, Real * pscatter, int * occupation, const int numbins, const Real rescalek, const Real rescalep, const char * filename, const char * description, double a, const double z_target = -1)
 {
+	nvtxRangePushA("writePowerSpectrum");
 	if (parallel.isRoot())
 	{
 #ifdef EXACT_OUTPUT_REDSHIFTS
@@ -389,6 +447,7 @@ void writePowerSpectrum(Real * kbin, Real * power, Real * kscatter, Real * pscat
 		free(power2);
 #endif
 	}
+	nvtxRangePop();
 }
 
 

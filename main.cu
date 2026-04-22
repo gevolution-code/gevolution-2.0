@@ -1,5 +1,5 @@
 //////////////////////////
-// Copyright (c) 2015-2025 Julian Adamek
+// Copyright (c) 2015-2026 Julian Adamek
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -26,9 +26,9 @@
 // 
 // main control sequence of Geneva N-body code with evolution of metric perturbations (gevolution)
 //
-// Author: Julian Adamek (Université de Genève & Observatoire de Paris & Queen Mary University of London & Universität Zürich)
+// Author: Julian Adamek (Université de Genève & Observatoire de Paris & Queen Mary University of London & Universität Zürich & ETH Zürich)
 //
-// Last modified: January 2025
+// Last modified: April 2026
 //
 //////////////////////////
 
@@ -53,12 +53,6 @@
 #include "gevolution.hpp"
 #include "ic_basic.hpp"
 #include "ic_read.hpp"
-#ifdef ICGEN_PREVOLUTION
-#include "ic_prevolution.hpp"
-#endif
-#ifdef ICGEN_FALCONIC
-#include "fcn/togevolution.hpp"
-#endif
 #ifdef ICGEN_RELIC
 #include "ic_relic.hpp"
 #endif
@@ -110,7 +104,9 @@ int main(int argc, char **argv)
 	char filename[2*PARAM_MAX_LENGTH+24];
 	string h5filename;
 	char * settingsfile = NULL;
+#ifdef HAVE_CLASS
 	char * precisionfile = NULL;
+#endif
 	parameter * params = NULL;
 	metadata sim;
 	cosmology cosmo;
@@ -144,8 +140,9 @@ int main(int argc, char **argv)
 #ifndef HAVE_CLASS
 				cout << "HAVE_CLASS needs to be set at compilation to use CLASS precision files" << endl;
 				exit(-100);
-#endif
+#else
 				precisionfile = argv[++i];
+#endif
 				break;
 			case 'i':
 #ifndef EXTERNAL_IO
@@ -281,21 +278,28 @@ int main(int argc, char **argv)
 	phi.initialize(lat,1);
 	chi.initialize(lat,1);
 	scalarFT.initialize(latFT,1);
-	PlanFFT<Cplx> plan_source(&source, &scalarFT);
-	PlanFFT<Cplx> plan_phi(&phi, &scalarFT);
-	PlanFFT<Cplx> plan_chi(&chi, &scalarFT);
 	Sij.initialize(lat,3,3,symmetric);
 	SijFT.initialize(latFT,3,3,symmetric);
 	PlanFFT<Cplx> plan_Sij(&Sij, &SijFT);
+	//plan_Sij.preallocate();
+	PlanFFT<Cplx> plan_source(&source, &scalarFT);
+	PlanFFT<Cplx> plan_phi(&phi, &scalarFT);
+	PlanFFT<Cplx> plan_chi(&chi, &scalarFT);
+	plan_chi.setExecutionMode(FFT_EXECUTION_CUDA_AWARE_MPI);
+	plan_Sij.setExecutionMode(FFT_EXECUTION_CUDA_AWARE_MPI);
+	plan_source.setExecutionMode(FFT_EXECUTION_CUDA_AWARE_MPI);
+	plan_phi.setExecutionMode(FFT_EXECUTION_CUDA_AWARE_MPI);
 	Bi.initialize(lat,3);
 	BiFT.initialize(latFT,3);
 	PlanFFT<Cplx> plan_Bi(&Bi, &BiFT);
+	plan_Bi.setExecutionMode(FFT_EXECUTION_CUDA_AWARE_MPI);
 #ifdef CHECK_B
 	Field<Real> Bi_check;
 	Field<Cplx> BiFT_check;
 	Bi_check.initialize(lat,3);
 	BiFT_check.initialize(latFT,3);
 	PlanFFT<Cplx> plan_Bi_check(&Bi_check, &BiFT_check);
+	plan_Bi_check.setExecutionMode(FFT_EXECUTION_CUDA_AWARE_MPI);
 #endif
 #ifdef VELOCITY
 	Field<Real> vi;
@@ -303,6 +307,7 @@ int main(int argc, char **argv)
 	vi.initialize(lat,3);
 	viFT.initialize(latFT,3);
 	PlanFFT<Cplx> plan_vi(&vi, &viFT);
+	plan_vi.setExecutionMode(FFT_EXECUTION_CUDA_AWARE_MPI);
 	double a_old;
 #endif
 #ifdef TENSOR_EVOLUTION
@@ -312,6 +317,7 @@ int main(int argc, char **argv)
 	hijprimeFT.initialize(latFT,3,3,symmetric);
 	PlanFFT<Cplx> plan_hij(&Sij, &hijFT);
 	hijprimeFT.alloc();
+	plan_hij.setExecutionMode(FFT_EXECUTION_CUDA_AWARE_MPI);
 #endif
 
 	update_cdm_fields[0] = &phi;
@@ -364,14 +370,6 @@ int main(int argc, char **argv)
 #ifdef ICGEN_RELIC
 	else if (ic.generator == ICGEN_RELIC)
 		generateIC_relic(sim, ic, cosmo, fourpiG, &pcls_cdm, &pcls_b, pcls_ncdm, maxvel, &phi, &chi, &Bi, &source, &Sij, zetaFT, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij, params, numparam);
-#endif
-#ifdef ICGEN_PREVOLUTION
-	else if (ic.generator == ICGEN_PREVOLUTION)
-		generateIC_prevolution(sim, ic, cosmo, fourpiG, a, tau, dtau, dtau_old, &pcls_cdm, &pcls_b, pcls_ncdm, maxvel, &phi, &chi, &Bi, &source, &Sij, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij, params, numparam);
-#endif
-#ifdef ICGEN_FALCONIC
-	else if (ic.generator == ICGEN_FALCONIC)
-		maxvel[0] = generateIC_FalconIC(sim, ic, cosmo, fourpiG, dtau, &pcls_cdm, pcls_ncdm, maxvel+1, &phi, &source, &chi, &Bi, &source, &Sij, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_source, &plan_chi, &plan_Bi, &plan_source, &plan_Sij);
 #endif
 	else
 	{
@@ -1323,4 +1321,3 @@ delete [] IDbacklog;
 
 	return 0;
 }
-

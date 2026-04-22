@@ -62,9 +62,9 @@ run: $(EXEC)
 profile: $(EXEC)
 	rsync -av ./$(EXEC) /capstor/scratch/cscs/adamek/testing/.
 	export LD_LIBRARY_PATH=$$LD_LIBRARY_PATH:/users/adamek/local_arm/lib
-	export OMP_NUM_THREADS=36
+	export OMP_NUM_THREADS=72
 	export OMP_PLACES=cores
-	srun -N 2 -n 16 --cpus-per-task=36 -C gpu -A sm97 --time=12:00 --partition=debug --hint=exclusive --cpu-bind=socket ./mps-wrapper.sh ./nsys_wrapper.sh /capstor/scratch/cscs/adamek/testing/$(EXEC) -n 4 -m 4 -s /capstor/scratch/cscs/adamek/testing/benchmark.ini
+	srun -N 1 -n 4 --cpus-per-task=72 -C gpu -A go25 --time=12:00 --partition=debug --hint=exclusive --cpu-bind=socket ./gpu-bind.sh ./nsys_wrapper.sh /capstor/scratch/cscs/adamek/testing/$(EXEC) -n 2 -m 2 -s /capstor/scratch/cscs/adamek/testing/sort-test.ini
 
 scaling-test: $(EXEC)
 	rsync -av ./$(EXEC) /capstor/scratch/cscs/adamek/testing/.

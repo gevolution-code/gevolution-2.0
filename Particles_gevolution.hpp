@@ -59,6 +59,10 @@ class perfParticles_gevolution: public perfParticles<part, part_info>
 		void saveGadget2(string filename, gadget2_header & hdr, lightcone_geometry & lightcone, double dist, double dtau, double dtau_old, double dadtau, double vertex[MAX_INTERSECTS][3], const int vertexcount, set<long> & IDbacklog, vector<long> * IDprelog, Field<Real> * phi, const int tracer_factor = 1);
 		void loadGadget2(string filename, gadget2_header & hdr);
 		void loadGadget2_express(string filename, gadget2_header & hdr);
+		uint64_t getTotalCapacity() const
+		{
+			return this->total_capacity_;
+		}
 
 		__host__ __device__ void bufferTracerParticle(int row, int idx, double dtau_pos, double dtau_vel, double a, double boxsize, Field<Real> * phi, float * posdata, float * veldata, long * IDs, unsigned long long int buffer_idx, float * pos_offset = nullptr);
 

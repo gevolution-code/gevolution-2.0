@@ -46,6 +46,10 @@ void generateIC_relic(metadata & sim, icsettings & ic, cosmology & cosmo, const 
 		COUT << " error: particle data was empty!" << endl;
 		parallel.abortForce();
 	}
+
+	uint64_t capacity = (16L * sim.numpcl[0] * (long) ic.numtile[0] * (long) ic.numtile[0] * (long) ic.numtile[0]) / (parallel.size() * 15L);
+
+	plan_source->preallocate((capacity+PCL_EXTRA_CAPACITY) * 3L * sizeof(Real));
 	
 	if (ic.flags & ICFLAG_CORRECT_DISPLACEMENT)
 		generateCICKernel(*source, sim.numpcl[0], pcldata, ic.numtile[0]);

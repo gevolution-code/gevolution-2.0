@@ -4,9 +4,9 @@
 // 
 // basic initial condition generator for gevolution
 //
-// Author: Julian Adamek (Université de Genève & Observatoire de Paris & Queen Mary University of London & Universität Zürich)
+// Author: Julian Adamek (Université de Genève & Observatoire de Paris & Queen Mary University of London & Universität Zürich & ETH Zürich)
 //
-// Last modified: December 2024
+// Last modified: April 2026
 //
 //////////////////////////
 
@@ -1849,6 +1849,10 @@ parameter * params, int & numparam)
 		COUT << " error: particle data was empty!" << endl;
 		parallel.abortForce();
 	}
+
+	uint64_t capacity = (16L * sim.numpcl[0] * (long) ic.numtile[0] * (long) ic.numtile[0] * (long) ic.numtile[0]) / (parallel.size() * 15L);
+
+	plan_source->preallocate((capacity+PCL_EXTRA_CAPACITY) * 3L * sizeof(Real));
 	
 	nvtxRangePushA("generateCICKernel");
 	if (ic.flags & ICFLAG_CORRECT_DISPLACEMENT)
@@ -2105,8 +2109,8 @@ parameter * params, int & numparam)
 				gsl_spline_free(tk_t2);
 				tk_d2 = gsl_spline_alloc(gsl_interp_cspline, tk_d1->size);
 				tk_t2 = gsl_spline_alloc(gsl_interp_cspline, tk_d1->size);
-				gsl_spline_init(tk_d2, tk_d2->x, temp1, tk_d1->size);
-				gsl_spline_init(tk_t2, tk_d2->x, temp2, tk_d1->size);
+				gsl_spline_init(tk_d2, tk_d1->x, temp1, tk_d1->size);
+				gsl_spline_init(tk_t2, tk_d1->x, temp2, tk_d1->size);
 			}
 		}
 		
@@ -2167,8 +2171,6 @@ parameter * params, int & numparam)
 	else
 		pcls_cdm_info.mass = (cosmo.Omega_cdm + cosmo.Omega_b) / (Real) (sim.numpcl[0]*(long)ic.numtile[0]*(long)ic.numtile[0]*(long)ic.numtile[0]);
 	pcls_cdm_info.relativistic = false;
-
-	uint64_t capacity = (16L * sim.numpcl[0] * (long) ic.numtile[0] * (long) ic.numtile[0] * (long) ic.numtile[0]) / (parallel.size() * 15L);
 	
 	//pcls_cdm->initialize(pcls_cdm_info, pcls_cdm_dataType, &(phi->lattice()), boxSize);
 	nvtxRangePushA("initialize CDM particles: memory allocation");
