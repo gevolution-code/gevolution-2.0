@@ -2,9 +2,9 @@
 // Particles_gevolution.hpp
 //////////////////////////
 //
-// Author: Julian Adamek (Université de Genève & Observatoire de Paris & Queen Mary University of London & Universität Zürich)
+// Author: Julian Adamek (Université de Genève & Observatoire de Paris & Queen Mary University of London & Universität Zürich & ETH Zürich)
 //
-// Last modified: January 2025
+// Last modified: April 2026
 //
 //////////////////////////
 
@@ -12,12 +12,86 @@
 #define PARTICLES_GEVOLUTION_HEADER
 
 #include "particles/LATfield2_perfParticles.hpp"
+#include "lightcone_id_backlog.hpp"
+#include "lightcone_device_workspace.hpp"
+#include <algorithm>
+#include <limits.h>
+#include <omp.h>
+#include <string.h>
+#include <thrust/device_ptr.h>
+#include <thrust/execution_policy.h>
+#include <thrust/sequence.h>
+#include <vector>
 
 #ifndef PCLBUFFER
 #define PCLBUFFER 1048576
 #endif
 
+#ifndef PARTICLE_LC_BALANCED_IO
+#define PARTICLE_LC_BALANCED_IO 0
+#endif
+
 using namespace LATfield2;
+
+struct LightconeParticleWriteChunk
+{
+	int row_start;
+	int row_count;
+	long count;
+	unsigned long long int check_count;
+};
+
+inline long long lightcone_balanced_partition_begin(long long total, int rank, int size)
+{
+	return (total / size) * rank + ((total % size) * rank) / size;
+}
+
+inline void lightcone_mpi_isend_bytes(const void * buffer, size_t bytes, int dest, int tag, MPI_Comm comm, vector<MPI_Request> & requests)
+{
+	const char * ptr = (const char *) buffer;
+
+	while (bytes > 0)
+	{
+		int count = (bytes > (size_t) INT_MAX) ? INT_MAX : (int) bytes;
+		requests.push_back(MPI_Request());
+		MPI_Isend((void *) ptr, count, MPI_BYTE, dest, tag, comm, &requests.back());
+		ptr += count;
+		bytes -= count;
+	}
+}
+
+inline void lightcone_mpi_irecv_bytes(void * buffer, size_t bytes, int source, int tag, MPI_Comm comm, vector<MPI_Request> & requests)
+{
+	char * ptr = (char *) buffer;
+
+	while (bytes > 0)
+	{
+		int count = (bytes > (size_t) INT_MAX) ? INT_MAX : (int) bytes;
+		requests.push_back(MPI_Request());
+		MPI_Irecv(ptr, count, MPI_BYTE, source, tag, comm, &requests.back());
+		ptr += count;
+		bytes -= count;
+	}
+}
+
+inline void lightcone_mpi_file_write_at_all_bytes(MPI_File file, MPI_Offset offset, void * buffer, unsigned long long int bytes, MPI_Comm comm, MPI_Status * status)
+{
+	unsigned long long int max_bytes = 0;
+	unsigned long long int done = 0;
+	char * ptr = (char *) buffer;
+	char dummy = 0;
+
+	MPI_Allreduce(&bytes, &max_bytes, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, comm);
+
+	while (done < max_bytes)
+	{
+		unsigned long long int remaining = (done < bytes) ? (bytes - done) : 0;
+		int count = (remaining > (unsigned long long int) INT_MAX) ? INT_MAX : (int) remaining;
+		void * write_ptr = (count > 0 && ptr != NULL) ? (void *) (ptr + done) : (void *) &dummy;
+		MPI_File_write_at_all(file, offset + (MPI_Offset) done, write_ptr, count, MPI_BYTE, status);
+		done += (unsigned long long int) INT_MAX;
+	}
+}
 
 template <typename part, typename part_info>
 class perfParticles_gevolution;
@@ -46,7 +120,7 @@ class Particles_gevolution: public Particles<part, part_info, part_dataType>
 	public:
 		void saveGadget2(string filename, gadget2_header & hdr, const int tracer_factor = 1, double dtau_pos = 0., double dtau_vel = 0., Field<Real> * phi = NULL);
 		template <int IDlog_scatter = 0>
-		void saveGadget2(string filename, gadget2_header & hdr, lightcone_geometry & lightcone, double dist, double dtau, double dtau_old, double dadtau, double vertex[MAX_INTERSECTS][3], const int vertexcount, set<long> & IDbacklog, vector<long> * IDprelog, Field<Real> * phi, const int tracer_factor = 1);
+		void saveGadget2(string filename, gadget2_header & hdr, lightcone_geometry & lightcone, double dist, double dtau, double dtau_old, double dadtau, double vertex[MAX_INTERSECTS][3], const int vertexcount, LightconeIDBacklog & IDbacklog, vector<long> * IDprelog, Field<Real> * phi, const int tracer_factor = 1);
 		void loadGadget2(string filename, gadget2_header & hdr);
 };
 
@@ -56,7 +130,7 @@ class perfParticles_gevolution: public perfParticles<part, part_info>
 	public:
 		void saveGadget2(string filename, gadget2_header & hdr, const int tracer_factor = 1, double dtau_pos = 0., double dtau_vel = 0., Field<Real> * phi = NULL);
 		template <int IDlog_scatter = 0>
-		void saveGadget2(string filename, gadget2_header & hdr, lightcone_geometry & lightcone, double dist, double dtau, double dtau_old, double dadtau, double vertex[MAX_INTERSECTS][3], const int vertexcount, set<long> & IDbacklog, vector<long> * IDprelog, Field<Real> * phi, const int tracer_factor = 1);
+		void saveGadget2(string filename, gadget2_header & hdr, lightcone_geometry & lightcone, double dist, double dtau, double dtau_old, double dadtau, double vertex[MAX_INTERSECTS][3], const int vertexcount, LightconeIDBacklog & IDbacklog, vector<long> * IDprelog, Field<Real> * phi, const int tracer_factor = 1);
 		void loadGadget2(string filename, gadget2_header & hdr);
 		void loadGadget2_express(string filename, gadget2_header & hdr);
 		uint64_t getTotalCapacity() const
@@ -760,7 +834,7 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 
 template <typename part, typename part_info, typename part_dataType>
 template <int IDlog_scatter>
-void Particles_gevolution<part,part_info,part_dataType>::saveGadget2(string filename, gadget2_header & hdr, lightcone_geometry & lightcone, double dist, double dtau, double dtau_old, double dadtau, double vertex[MAX_INTERSECTS][3], const int vertexcount, set<long> & IDbacklog, vector<long> * IDprelog, Field<Real> * phi, const int tracer_factor)
+void Particles_gevolution<part,part_info,part_dataType>::saveGadget2(string filename, gadget2_header & hdr, lightcone_geometry & lightcone, double dist, double dtau, double dtau_old, double dadtau, double vertex[MAX_INTERSECTS][3], const int vertexcount, LightconeIDBacklog & IDbacklog, vector<long> * IDprelog, Field<Real> * phi, const int tracer_factor)
 {
 	float * posdata;
 	float * veldata;
@@ -823,7 +897,7 @@ void Particles_gevolution<part,part_info,part_dataType>::saveGadget2(string file
 
 						if (lightcone.opening == -1. || (((*it).pos[0]-vertex[i][0])*lightcone.direction[0] + ((*it).pos[1]-vertex[i][1])*lightcone.direction[1] + ((*it).pos[2]-vertex[i][2])*lightcone.direction[2]) / d > lightcone.opening)
 						{
-							if (outer - d > 2. * LIGHTCONE_IDCHECK_ZONE * dtau_old || IDbacklog.find((*it).ID) == IDbacklog.end())
+							if (outer - d > 2. * LIGHTCONE_IDCHECK_ZONE * dtau_old || !IDbacklog.contains((*it).ID))
 							{
 								if (d - inner < 2. * LIGHTCONE_IDCHECK_ZONE * dtau)
 								{
@@ -1007,7 +1081,7 @@ void Particles_gevolution<part,part_info,part_dataType>::saveGadget2(string file
 
 							if (lightcone.opening == -1. || (((*it).pos[0]-vertex[i][0])*lightcone.direction[0] + ((*it).pos[1]-vertex[i][1])*lightcone.direction[1] + ((*it).pos[2]-vertex[i][2])*lightcone.direction[2]) / d > lightcone.opening)
 							{
-								if (outer - d > 2. * LIGHTCONE_IDCHECK_ZONE * dtau_old || IDbacklog.find((*it).ID) == IDbacklog.end())
+								if (outer - d > 2. * LIGHTCONE_IDCHECK_ZONE * dtau_old || !IDbacklog.contains((*it).ID))
 								{
 									for (int j = 0; j < 3; j++)
 										ref_dist[j] = modf((*it).pos[j] / this->lat_resolution_, &v2);
@@ -1309,19 +1383,133 @@ __global__ void buffer_tracer_particles(perfParticles_gevolution<part, part_info
 	}
 }
 
+__device__ inline bool lightcone_backlog_contains_device(const long * backlog, long backlog_count, long id)
+{
+	long lo = 0;
+	long hi = backlog_count;
+
+	while (lo < hi)
+	{
+		long mid = lo + (hi - lo) / 2;
+		long value = backlog[mid];
+
+		if (value < id)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+
+	return lo < backlog_count && backlog[lo] == id;
+}
+
+__global__ void count_lightcone_duplicate_ids(const long * IDs, unsigned long long int count, const long * backlog, long backlog_count, unsigned long long int * duplicates)
+{
+	unsigned long long int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	unsigned long long int stride = blockDim.x * gridDim.x;
+	unsigned long long int local_count = 0;
+
+	for (; idx < count; idx += stride)
+	{
+		if (lightcone_backlog_contains_device(backlog, backlog_count, IDs[idx]))
+			local_count++;
+	}
+
+	if (local_count > 0)
+		atomicAdd(duplicates, local_count);
+}
+
+__global__ void mark_lightcone_kept_particles(const long * IDs, unsigned long long int count, unsigned long long int check_count, const long * backlog, long backlog_count, unsigned char * keep_flags)
+{
+	unsigned long long int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	unsigned long long int stride = blockDim.x * gridDim.x;
+
+	for (; idx < count; idx += stride)
+	{
+		keep_flags[idx] = (idx >= check_count || !lightcone_backlog_contains_device(backlog, backlog_count, IDs[idx])) ? 1 : 0;
+	}
+}
+
+__global__ void gather_lightcone_kept_particles(const float * pos_in, const float * vel_in, const long * ids_in, const unsigned char * log_in, float * pos_out, float * vel_out, long * ids_out, unsigned char * log_out, const unsigned long long int * selected, unsigned long long int count)
+{
+	unsigned long long int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	unsigned long long int stride = blockDim.x * gridDim.x;
+
+	for (; idx < count; idx += stride)
+	{
+		unsigned long long int src = selected[idx];
+
+		for (int j = 0; j < 3; j++)
+		{
+			pos_out[3*idx+j] = pos_in[3*src+j];
+			vel_out[3*idx+j] = vel_in[3*src+j];
+		}
+
+		ids_out[idx] = ids_in[src];
+		log_out[idx] = log_in[src];
+	}
+}
+
+__global__ void count_lightcone_prelog_bins(const unsigned char * loginfo, unsigned long long int count, int log_bins, unsigned long long int * bin_counts)
+{
+	unsigned long long int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	unsigned long long int stride = blockDim.x * gridDim.x;
+
+	for (; idx < count; idx += stride)
+	{
+		if (loginfo[idx] < 255)
+		{
+			int bin = (log_bins > 1) ? loginfo[idx] : 0;
+			atomicAdd(bin_counts + bin, 1);
+		}
+	}
+}
+
+__global__ void fill_lightcone_prelog_bins(const long * IDs, const unsigned char * loginfo, unsigned long long int count, int log_bins, const unsigned long long int * bin_offsets, unsigned long long int * bin_cursors, long * prelog_ids)
+{
+	unsigned long long int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	unsigned long long int stride = blockDim.x * gridDim.x;
+
+	for (; idx < count; idx += stride)
+	{
+		if (loginfo[idx] < 255)
+		{
+			int bin = (log_bins > 1) ? loginfo[idx] : 0;
+			unsigned long long int dst = bin_offsets[bin] + atomicAdd(bin_cursors + bin, 1);
+			prelog_ids[dst] = IDs[idx];
+		}
+	}
+}
 
 template <typename part, typename part_info>
 template <int IDlog_scatter>
-void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadget2_header & hdr, lightcone_geometry & lightcone, double dist, double dtau, double dtau_old, double dadtau, double vertex[MAX_INTERSECTS][3], const int vertexcount, set<long> & IDbacklog, vector<long> * IDprelog, Field<Real> * phi, const int tracer_factor)
+void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadget2_header & hdr, lightcone_geometry & lightcone, double dist, double dtau, double dtau_old, double dadtau, double vertex[MAX_INTERSECTS][3], const int vertexcount, LightconeIDBacklog & IDbacklog, vector<long> * IDprelog, Field<Real> * phi, const int tracer_factor)
 {
 	float * posdata;
 	float * veldata;
 	long * IDs;
-	unsigned char * loginfo;
+	float * d_posdata = NULL;
+	float * d_veldata = NULL;
+	float * d_posdata_compact = NULL;
+	float * d_veldata_compact = NULL;
+	long * d_IDs = NULL;
+	long * d_IDs_compact = NULL;
+	long * d_IDbacklog = NULL;
+	long * d_prelog_ids = NULL;
+	unsigned char * d_loginfo = NULL;
+	unsigned char * d_loginfo_compact = NULL;
+	unsigned char * d_keep_flags = NULL;
+	unsigned long long int * d_indices = NULL;
+	unsigned long long int * d_selected = NULL;
+	unsigned long long int * d_selected_count = NULL;
+	unsigned long long int * d_prelog_counts = NULL;
+	unsigned long long int * d_prelog_offsets = NULL;
+	unsigned long long int * d_prelog_cursors = NULL;
 	long count, npart, reject;
+	long backlog_count = IDbacklog.size();
 	int row_start = 0, row_count;
 	MPI_File outfile;
 	MPI_Offset offset_pos, offset_vel, offset_ID;
+	MPI_Offset offset_pos_base, offset_vel_base, offset_ID_base;
 	MPI_Status status;
 	uint32_t blocksize;
 	unsigned long long int buffer_count1, buffer_count2;
@@ -1335,15 +1523,20 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 	unsigned long long int * d_buffer_count2;
 	int * d_npart_row;
 	int * d_npart_checkID_row;
-
-	npart_row = (int *) malloc(sizeof(int) * this->num_row_buffers_);
-	npart_checkID_row = (int *) malloc(sizeof(int) * this->num_row_buffers_);
-
-	cudaMalloc((void **) &d_npart, sizeof(long));
-	cudaMalloc((void **) &d_buffer_count1, sizeof(unsigned long long int));
-	cudaMalloc((void **) &d_buffer_count2, sizeof(unsigned long long int));
-	cudaMalloc((void **) &d_npart_row, sizeof(int) * this->num_row_buffers_);
-	cudaMalloc((void **) &d_npart_checkID_row, sizeof(int) * this->num_row_buffers_);
+	vector<LightconeParticleWriteChunk> particle_write_chunks;
+	long long local_particle_begin = 0;
+	long long local_particle_cursor = 0;
+	long long total_particles = 0;
+	long long writer_begin = 0;
+	long long writer_end = 0;
+	long long writer_count = 0;
+	int global_write_chunk_count = 0;
+#if PARTICLE_LC_BALANCED_IO
+	bool balanced_io_active = true;
+#else
+	bool balanced_io_active = false;
+#endif
+	cudaError_t success;
 
 	if (hdr.num_files != 1)
 	{
@@ -1351,17 +1544,15 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 		return;
 	}
 
+	npart_row = (int *) malloc(sizeof(int) * this->num_row_buffers_);
+	npart_checkID_row = (int *) malloc(sizeof(int) * this->num_row_buffers_);
+
 	domain[0] = this->coordSkip_[1] * this->boxSize_[0] / this->lat_size_[0];
 	domain[1] = domain[0] + this->lat_size_local_[1] * this->boxSize_[0] / this->lat_size_[0];
 	domain[2] = this->coordSkip_[0] * this->boxSize_[0] / this->lat_size_[0];
 	domain[3] = domain[2] + this->lat_size_local_[2] * this->boxSize_[0] / this->lat_size_[0];
 
-	IDs = (long *) malloc(sizeof(int64_t) * PCLBUFFER);
-
-	if (IDs == NULL)
-	{
-		throw std::runtime_error("Error allocating memory for particle IDs");
-	}
+	IDs = NULL;
 
 	nvtxRangePushA("count particles to be written");
 
@@ -1373,27 +1564,136 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 		npart_checkID_row[row] = 0;
 	}
 
-	cudaMemcpy(d_npart, &npart, sizeof(long), cudaMemcpyHostToDevice);
-	cudaMemcpy(d_npart_row, npart_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyHostToDevice);
-	cudaMemcpy(d_npart_checkID_row, npart_checkID_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyHostToDevice);
-
-	// count particles
-	count_tracer_particles<part, part_info><<<this->num_row_buffers_, 128>>>(this, tracer_factor, lightcone, inner, outer, dtau_old, vertex, vertexcount, d_npart, d_npart_row, d_npart_checkID_row);
-
-	auto success = cudaDeviceSynchronize();
-
-	if (success != cudaSuccess)
 	{
-		throw std::runtime_error("CUDA error in count_tracer_particles");
+		size_t count_workspace_bytes = 0;
+		count_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<long>(1);
+		count_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned long long int>(1);
+		count_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned long long int>(1);
+		count_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<int>(this->num_row_buffers_);
+		count_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<int>(this->num_row_buffers_);
+
+		LightconeDeviceWorkspace count_workspace(count_workspace_bytes, "particle light-cone counting", "counting workspace");
+
+		d_npart = count_workspace.slice<long>(1, "particle count scalar");
+		d_buffer_count1 = count_workspace.slice<unsigned long long int>(1, "check-zone buffer counter");
+		d_buffer_count2 = count_workspace.slice<unsigned long long int>(1, "particle buffer counter");
+		d_npart_row = count_workspace.slice<int>(this->num_row_buffers_, "per-row particle counts");
+		d_npart_checkID_row = count_workspace.slice<int>(this->num_row_buffers_, "per-row check-zone particle counts");
+
+		cudaMemcpy(d_npart, &npart, sizeof(long), cudaMemcpyHostToDevice);
+		cudaMemcpy(d_npart_row, npart_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyHostToDevice);
+		cudaMemcpy(d_npart_checkID_row, npart_checkID_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyHostToDevice);
+
+		// count particles
+		count_tracer_particles<part, part_info><<<this->num_row_buffers_, 128>>>(this, tracer_factor, lightcone, inner, outer, dtau_old, vertex, vertexcount, d_npart, d_npart_row, d_npart_checkID_row);
+
+		success = cudaDeviceSynchronize();
+
+		if (success != cudaSuccess)
+		{
+			throw std::runtime_error("CUDA error in count_tracer_particles");
+		}
+
+		cudaMemcpy(&npart, d_npart, sizeof(long), cudaMemcpyDeviceToHost);
+		cudaMemcpy(npart_row, d_npart_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyDeviceToHost);
+		cudaMemcpy(npart_checkID_row, d_npart_checkID_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyDeviceToHost);
 	}
 
-	cudaMemcpy(&npart, d_npart, sizeof(long), cudaMemcpyDeviceToHost);
-	cudaMemcpy(npart_row, d_npart_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyDeviceToHost);
-	cudaMemcpy(npart_checkID_row, d_npart_checkID_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyDeviceToHost);
+	long max_check_count = 0;
+	long max_buffer_count = 0;
 
-	cudaFree(d_npart);
-	cudaFree(d_npart_row);
-	cudaFree(d_npart_checkID_row);
+	for (int row = 0; row < this->num_row_buffers_; )
+	{
+		long chunk_count = 0;
+		int chunk_rows = 0;
+
+		do
+		{
+			chunk_count += npart_checkID_row[row + chunk_rows];
+			chunk_rows++;
+		} while (chunk_count < PCLBUFFER && row + chunk_rows < this->num_row_buffers_);
+
+		if (chunk_count > max_check_count)
+			max_check_count = chunk_count;
+
+		row += chunk_rows;
+	}
+
+	for (int row = 0; row < this->num_row_buffers_; )
+	{
+		long chunk_count = 0;
+		int chunk_rows = 0;
+
+		do
+		{
+			chunk_count += npart_row[row + chunk_rows];
+			chunk_rows++;
+		} while (chunk_count < PCLBUFFER && row + chunk_rows < this->num_row_buffers_);
+
+		if (chunk_count > max_buffer_count)
+			max_buffer_count = chunk_count;
+
+		row += chunk_rows;
+	}
+
+	size_t select_temp_bytes = 0;
+
+	if (max_buffer_count > 0)
+	{
+		cub::DeviceSelect::Flagged((void *) NULL, select_temp_bytes, (unsigned long long int *) NULL, (unsigned char *) NULL, (unsigned long long int *) NULL, (unsigned long long int *) NULL, max_buffer_count);
+	}
+
+	size_t persistent_workspace_bytes = LightconeDeviceWorkspace::aligned_bytes<long>(backlog_count);
+	size_t check_phase_workspace_bytes = 0;
+	size_t buffer_phase_workspace_bytes = 0;
+
+	check_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned long long int>(1);
+	check_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<long>(max_check_count);
+	check_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned long long int>(1);
+
+	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned long long int>(1);
+	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned long long int>(1);
+	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<float>(3 * max_buffer_count);
+	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<float>(3 * max_buffer_count);
+	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<long>(max_buffer_count);
+	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned char>(max_buffer_count);
+	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned char>(max_buffer_count);
+	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned long long int>(max_buffer_count);
+	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned long long int>(max_buffer_count);
+	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned long long int>(1);
+	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<float>(3 * max_buffer_count);
+	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<float>(3 * max_buffer_count);
+	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<long>(max_buffer_count);
+	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned char>(max_buffer_count);
+	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned long long int>(9);
+	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned long long int>(9);
+	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned long long int>(9);
+	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<long>(max_buffer_count);
+	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::align_up(select_temp_bytes);
+
+	if (parallel.rank() == 0)
+	{
+		cout << " particle light-cone workspace request: persistent=" << persistent_workspace_bytes
+		     << " bytes, check_phase=" << check_phase_workspace_bytes
+		     << " bytes, buffer_phase=" << buffer_phase_workspace_bytes
+		     << " bytes, max_check_count=" << max_check_count
+		     << ", max_buffer_count=" << max_buffer_count
+		     << ", cub_select_temp=" << select_temp_bytes
+#ifdef FFT3D
+		     << ", LATfield2_workspace_available=" << LATfield2::tempMemory.deviceWorkspaceBytes()
+#endif
+		     << endl;
+	}
+
+	LightconeDeviceWorkspace function_workspace(persistent_workspace_bytes + std::max(check_phase_workspace_bytes, buffer_phase_workspace_bytes), "particle light-cone buffers", "temporary buffer workspace");
+
+	if (backlog_count > 0)
+	{
+		d_IDbacklog = function_workspace.slice<long>(backlog_count, "device ID backlog");
+		cudaMemcpy(d_IDbacklog, IDbacklog.data(), sizeof(long) * backlog_count, cudaMemcpyHostToDevice);
+	}
+
+	size_t persistent_workspace_mark = function_workspace.mark();
 
 	// first loop: collect IDs to be checked against IDbacklog
 	while (row_start < this->num_row_buffers_)
@@ -1407,24 +1707,17 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 			row_count++;
 		} while (count < PCLBUFFER && row_start + row_count < this->num_row_buffers_);
 
-		if (count > PCLBUFFER)
-		{
-			long * new_IDs = (long *) realloc(IDs, sizeof(int64_t) * count);
-
-			if (new_IDs == NULL)
-			{
-				throw std::runtime_error("Error reallocating memory for particle IDs");
-			}
-
-			IDs = new_IDs;
-		}
-
 		if (count > 0)
 		{
+			function_workspace.reset(persistent_workspace_mark);
+
+			d_buffer_count1 = function_workspace.slice<unsigned long long int>(1, "check-zone ID counter");
+			d_IDs = function_workspace.slice<long>(count, "check-zone IDs");
+
 			//buffer_count1 = 0;
 			cudaMemset(d_buffer_count1, 0, sizeof(unsigned long long int));
 
-			buffer_tracer_IDs<part, part_info><<<row_count, 128>>>(this, tracer_factor, lightcone, inner, outer, dtau_old, vertex, vertexcount, IDs, row_start, d_buffer_count1);
+			buffer_tracer_IDs<part, part_info><<<row_count, 128>>>(this, tracer_factor, lightcone, inner, outer, dtau_old, vertex, vertexcount, d_IDs, row_start, d_buffer_count1);
 
 			success = cudaDeviceSynchronize();
 
@@ -1438,16 +1731,31 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 			// check IDs against IDbacklog
 			reject = 0;
 
-#pragma omp parallel for reduction(+:reject)
-			for (unsigned long long int i = 0; i < buffer_count1; i++)
+			if (buffer_count1 > 0 && backlog_count > 0)
 			{
-				if (IDbacklog.find(IDs[i]) != IDbacklog.end())
+				unsigned long long int d_reject_host = 0;
+				unsigned long long int * d_reject;
+				int blocks = (buffer_count1 + 255) / 256;
+
+				if (blocks > 65535)
+					blocks = 65535;
+
+				d_reject = function_workspace.slice<unsigned long long int>(1, "duplicate rejection counter");
+				cudaMemcpy(d_reject, &d_reject_host, sizeof(unsigned long long int), cudaMemcpyHostToDevice);
+				count_lightcone_duplicate_ids<<<blocks, 256>>>(d_IDs, buffer_count1, d_IDbacklog, backlog_count, d_reject);
+				success = cudaDeviceSynchronize();
+
+				if (success != cudaSuccess)
 				{
-					reject++;
+					throw std::runtime_error("CUDA error in count_lightcone_duplicate_ids");
 				}
+
+				cudaMemcpy(&d_reject_host, d_reject, sizeof(unsigned long long int), cudaMemcpyDeviceToHost);
+				reject = (long) d_reject_host;
 			}
 
 			npart -= reject;
+			d_IDs = NULL;
 		}
 
 		row_start += row_count;
@@ -1473,21 +1781,27 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 
 	parallel.broadcast<uint32_t>(hdr.npartTotal[1], 0);
 	parallel.broadcast<uint32_t>(hdr.npartTotalHW[1], 0);
+	local_particle_begin = count;
+	local_particle_cursor = local_particle_begin;
+	total_particles = (long long) hdr.npartTotal[1] + ((long long) hdr.npartTotalHW[1] << 32);
 
 	nvtxRangePop();
 
-	if (hdr.npartTotal[1] + ((int64_t) hdr.npartTotalHW[1] << 32) > 0)
+	if (total_particles > 0)
 	{
 		MPI_File_open(parallel.lat_world_comm(), filename.c_str(), MPI_MODE_WRONLY | MPI_MODE_CREATE,  MPI_INFO_NULL, &outfile);
 	
-		offset_pos = (MPI_Offset) ((int64_t) hdr.npartTotal[1] + ((int64_t) hdr.npartTotalHW[1] << 32));
+		offset_pos = (MPI_Offset) total_particles;
 		offset_pos *= (MPI_Offset) (6 * sizeof(float) + sizeof(int64_t));
 		offset_pos += (MPI_Offset) (8 * sizeof(uint32_t) + sizeof(hdr));
 		MPI_File_set_size(outfile, offset_pos);
 	
-		offset_pos = (MPI_Offset) (3 * sizeof(uint32_t) + sizeof(hdr)) + ((MPI_Offset) count) * ((MPI_Offset) (3 * sizeof(float)));
-		offset_vel = offset_pos + (MPI_Offset) (2 * sizeof(uint32_t)) + ((MPI_Offset) ((int64_t) hdr.npartTotal[1] + ((int64_t) hdr.npartTotalHW[1] << 32))) * ((MPI_Offset) (3 * sizeof(float)));
-		offset_ID = offset_vel + (MPI_Offset) (2 * sizeof(uint32_t)) + ((MPI_Offset) ((int64_t) hdr.npartTotal[1] + ((int64_t) hdr.npartTotalHW[1] << 32)) - (MPI_Offset) count) * ((MPI_Offset) (3 * sizeof(float))) + ((MPI_Offset) count) * ((MPI_Offset) sizeof(int64_t));
+		offset_pos_base = (MPI_Offset) (3 * sizeof(uint32_t) + sizeof(hdr));
+		offset_vel_base = offset_pos_base + (MPI_Offset) (2 * sizeof(uint32_t)) + ((MPI_Offset) total_particles) * ((MPI_Offset) (3 * sizeof(float)));
+		offset_ID_base = offset_vel_base + (MPI_Offset) (2 * sizeof(uint32_t)) + ((MPI_Offset) total_particles) * ((MPI_Offset) (3 * sizeof(float)));
+		offset_pos = offset_pos_base + ((MPI_Offset) local_particle_begin) * ((MPI_Offset) (3 * sizeof(float)));
+		offset_vel = offset_vel_base + ((MPI_Offset) local_particle_begin) * ((MPI_Offset) (3 * sizeof(float)));
+		offset_ID = offset_ID_base + ((MPI_Offset) local_particle_begin) * ((MPI_Offset) sizeof(int64_t));
 	
 		if (parallel.rank() == 0)
 		{
@@ -1505,40 +1819,108 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 			MPI_File_write_at(outfile, offset_ID + blocksize, &blocksize, 1, MPI_UNSIGNED, &status);
 		}
 
-		posdata = (float *) malloc(3 * sizeof(float) * PCLBUFFER);
-		veldata = (float *) malloc(3 * sizeof(float) * PCLBUFFER);
-		loginfo = (unsigned char *) malloc(PCLBUFFER);
-
-		if (posdata == NULL || veldata == NULL || loginfo == NULL)
+		for (int row = 0; row < this->num_row_buffers_; )
 		{
-			throw std::runtime_error("Error allocating memory for particle buffers");
-		}
-
-		// second loop: buffer and write particles
-		row_start = 0;
-
-		while (row_start < this->num_row_buffers_)
-		{
-			nvtxRangePushA("buffer particles");
-			count = 0;
-			row_count = 0;
-			buffer_count2 = 0;
+			LightconeParticleWriteChunk chunk;
+			chunk.row_start = row;
+			chunk.row_count = 0;
+			chunk.count = 0;
+			chunk.check_count = 0;
 
 			do
 			{
-				count += npart_row[row_start + row_count];
-				buffer_count2 += npart_checkID_row[row_start + row_count];
-				row_count++;
-			} while (count < PCLBUFFER && row_start + row_count < this->num_row_buffers_);
+				chunk.count += npart_row[row + chunk.row_count];
+				chunk.check_count += npart_checkID_row[row + chunk.row_count];
+				chunk.row_count++;
+			} while (chunk.count < PCLBUFFER && row + chunk.row_count < this->num_row_buffers_);
 
-			if (count > PCLBUFFER)
+			particle_write_chunks.push_back(chunk);
+			row += chunk.row_count;
+		}
+
+		if (balanced_io_active)
+		{
+			int local_write_chunk_count = (int) particle_write_chunks.size();
+			MPI_Allreduce(&local_write_chunk_count, &global_write_chunk_count, 1, MPI_INT, MPI_MAX, parallel.lat_world_comm());
+
+			writer_begin = lightcone_balanced_partition_begin(total_particles, parallel.rank(), parallel.size());
+			writer_end = lightcone_balanced_partition_begin(total_particles, parallel.rank()+1, parallel.size());
+			writer_count = writer_end - writer_begin;
+
+			if (writer_count > 0)
+			{
+				posdata = (float *) malloc((size_t) writer_count * 3 * sizeof(float));
+				veldata = (float *) malloc((size_t) writer_count * 3 * sizeof(float));
+				IDs = (long *) malloc((size_t) writer_count * sizeof(long));
+			}
+			else
+			{
+				posdata = NULL;
+				veldata = NULL;
+				IDs = NULL;
+			}
+
+			int local_allocation_failed = (writer_count > 0 && (posdata == NULL || veldata == NULL || IDs == NULL)) ? 1 : 0;
+			int global_allocation_failed = 0;
+			MPI_Allreduce(&local_allocation_failed, &global_allocation_failed, 1, MPI_INT, MPI_MAX, parallel.lat_world_comm());
+
+			if (global_allocation_failed)
+			{
+				if (local_allocation_failed)
+				{
+					cout << COLORTEXT_YELLOW << " /!\\ warning" << COLORTEXT_RESET << ": proc#" << parallel.rank() << " unable to allocate balanced particle light-cone writer buffers for " << writer_count << " particles; falling back to direct MPI-IO." << endl;
+				}
+				if (posdata != NULL) free(posdata);
+				if (veldata != NULL) free(veldata);
+				if (IDs != NULL) free(IDs);
+				posdata = NULL;
+				veldata = NULL;
+				IDs = NULL;
+				balanced_io_active = false;
+			}
+		}
+
+		if (!balanced_io_active)
+		{
+			posdata = (float *) malloc(3 * sizeof(float) * PCLBUFFER);
+			veldata = (float *) malloc(3 * sizeof(float) * PCLBUFFER);
+			IDs = (long *) malloc(sizeof(long) * PCLBUFFER);
+		}
+
+		if (posdata == NULL || veldata == NULL || IDs == NULL)
+		{
+			if (!balanced_io_active || writer_count > 0)
+				throw std::runtime_error("Error allocating memory for particle buffers");
+		}
+
+		// second loop: buffer and write particles
+		int write_chunk_count = balanced_io_active ? global_write_chunk_count : (int) particle_write_chunks.size();
+
+		for (int write_chunk = 0; write_chunk < write_chunk_count; write_chunk++)
+		{
+			nvtxRangePushA("buffer particles");
+			if (write_chunk < (int) particle_write_chunks.size())
+			{
+				row_start = particle_write_chunks[write_chunk].row_start;
+				row_count = particle_write_chunks[write_chunk].row_count;
+				count = particle_write_chunks[write_chunk].count;
+				buffer_count2 = particle_write_chunks[write_chunk].check_count;
+			}
+			else
+			{
+				row_start = this->num_row_buffers_;
+				row_count = 0;
+				count = 0;
+				buffer_count2 = 0;
+			}
+
+			if (!balanced_io_active && count > PCLBUFFER)
 			{
 				float * new_posdata = (float *) realloc(posdata, 3 * sizeof(float) * count);
 				float * new_veldata = (float *) realloc(veldata, 3 * sizeof(float) * count);
-				long * new_IDs = (long *) realloc(IDs, sizeof(int64_t) * count);
-				unsigned char * new_loginfo = (unsigned char *) realloc(loginfo, count);
+				long * new_IDs = (long *) realloc(IDs, sizeof(long) * count);
 
-				if (new_posdata == NULL || new_veldata == NULL || new_IDs == NULL || new_loginfo == NULL)
+				if (new_posdata == NULL || new_veldata == NULL || new_IDs == NULL)
 				{
 					throw std::runtime_error("Error reallocating memory for particle buffers");
 				}
@@ -1546,16 +1928,37 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 				posdata = new_posdata;
 				veldata = new_veldata;
 				IDs = new_IDs;
-				loginfo = new_loginfo;
 			}
 
 			if (count > 0)
 			{
+				function_workspace.reset(persistent_workspace_mark);
+
+				d_buffer_count1 = function_workspace.slice<unsigned long long int>(1, "particle overlap counter");
+				d_buffer_count2 = function_workspace.slice<unsigned long long int>(1, "particle output counter");
+				d_posdata = function_workspace.slice<float>(3 * count, "particle position write buffer");
+				d_veldata = function_workspace.slice<float>(3 * count, "particle velocity write buffer");
+				d_IDs = function_workspace.slice<long>(count, "particle ID write buffer");
+				d_loginfo = function_workspace.slice<unsigned char>(count, "particle ID-log routing tags");
+				d_keep_flags = function_workspace.slice<unsigned char>(count, "particle duplicate keep flags");
+				d_indices = function_workspace.slice<unsigned long long int>(count, "particle compaction source indices");
+				d_selected = function_workspace.slice<unsigned long long int>(count, "particle compaction selected indices");
+				d_selected_count = function_workspace.slice<unsigned long long int>(1, "particle compaction selected count");
+				d_posdata_compact = function_workspace.slice<float>(3 * count, "compacted particle position buffer");
+				d_veldata_compact = function_workspace.slice<float>(3 * count, "compacted particle velocity buffer");
+				d_IDs_compact = function_workspace.slice<long>(count, "compacted particle ID buffer");
+				d_loginfo_compact = function_workspace.slice<unsigned char>(count, "compacted ID-log routing tags");
+				d_prelog_counts = function_workspace.slice<unsigned long long int>(9, "ID-prelog bin counts");
+				d_prelog_offsets = function_workspace.slice<unsigned long long int>(9, "ID-prelog bin offsets");
+				d_prelog_cursors = function_workspace.slice<unsigned long long int>(9, "ID-prelog bin cursors");
+				d_prelog_ids = function_workspace.slice<long>(count, "ID-prelog IDs");
+				void * select_temp = function_workspace.slice_bytes(select_temp_bytes, 256, "CUB duplicate compaction temporary storage");
+
 				//buffer_count1 = 0;
 				cudaMemset(d_buffer_count1, 0, sizeof(unsigned long long int));
 				cudaMemcpy(d_buffer_count2, &buffer_count2, sizeof(unsigned long long int), cudaMemcpyHostToDevice);
 
-				buffer_tracer_particles<part, part_info, IDlog_scatter><<<row_count, 128>>>(this, tracer_factor, lightcone, (Real) dist, inner, outer, dtau, dtau_old, (double) hdr.time, dadtau, this->boxSize_[0], domain, phi, vertex, vertexcount, posdata, veldata, IDs, loginfo, row_start, d_buffer_count1, d_buffer_count2);
+				buffer_tracer_particles<part, part_info, IDlog_scatter><<<row_count, 128>>>(this, tracer_factor, lightcone, (Real) dist, inner, outer, dtau, dtau_old, (double) hdr.time, dadtau, this->boxSize_[0], domain, phi, vertex, vertexcount, d_posdata, d_veldata, d_IDs, d_loginfo, row_start, d_buffer_count1, d_buffer_count2);
 
 				success = cudaDeviceSynchronize();
 
@@ -1566,51 +1969,52 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 
 				cudaMemcpy(&buffer_count1, d_buffer_count1, sizeof(unsigned long long int), cudaMemcpyDeviceToHost);
 
-				if (buffer_count1 > 0)
+				if (buffer_count1 > 0 && backlog_count > 0)
 				{
-#pragma omp parallel for
-					for (unsigned long long int i = 0; i < buffer_count1; i++)
+					int blocks = (count + 255) / 256;
+
+					if (blocks > 65535)
+						blocks = 65535;
+
+					mark_lightcone_kept_particles<<<blocks, 256>>>(d_IDs, count, buffer_count1, d_IDbacklog, backlog_count, d_keep_flags);
+					success = cudaDeviceSynchronize();
+
+					if (success != cudaSuccess)
 					{
-						if (IDbacklog.find(IDs[i]) != IDbacklog.end()) // need to remove particle from buffers
-						{
-							#pragma omp critical
-							{
-								if (count > buffer_count1)
-								{
-									for (int j = 0; j < 3; j++)
-									{
-										posdata[3*i+j] = posdata[3*(count-1)+j];
-										veldata[3*i+j] = veldata[3*(count-1)+j];
-									}
-
-									IDs[i] = IDs[count-1];
-									loginfo[i] = loginfo[count-1];
-
-									count--;
-								}
-							}
-						}
+						throw std::runtime_error("CUDA error in mark_lightcone_kept_particles");
 					}
 
-					if (count == buffer_count1) // we were unlucky and need to check again in a non-parallel way
+					thrust::sequence(thrust::device, d_indices, d_indices + count);
+
+					cub::DeviceSelect::Flagged(select_temp, select_temp_bytes, d_indices, d_keep_flags, d_selected, d_selected_count, count);
+					cudaDeviceSynchronize();
+
+					unsigned long long int kept_count = 0;
+					cudaMemcpy(&kept_count, d_selected_count, sizeof(unsigned long long int), cudaMemcpyDeviceToHost);
+
+					if (kept_count < (unsigned long long int) count)
 					{
-						for (unsigned long long int i = 0; i < count; i++)
+						if (kept_count > 0)
 						{
-							if (IDbacklog.find(IDs[i]) != IDbacklog.end())
+							blocks = (kept_count + 255) / 256;
+
+							if (blocks > 65535)
+								blocks = 65535;
+
+							gather_lightcone_kept_particles<<<blocks, 256>>>(d_posdata, d_veldata, d_IDs, d_loginfo, d_posdata_compact, d_veldata_compact, d_IDs_compact, d_loginfo_compact, d_selected, kept_count);
+							success = cudaDeviceSynchronize();
+
+							if (success != cudaSuccess)
 							{
-								for (int j = 0; j < 3; j++)
-								{
-									posdata[3*i+j] = posdata[3*(count-1)+j];
-									veldata[3*i+j] = veldata[3*(count-1)+j];
-								}
-
-								IDs[i] = IDs[count-1];
-								loginfo[i] = loginfo[count-1];
-
-								count--;
-								i--;
+								throw std::runtime_error("CUDA error in gather_lightcone_kept_particles");
 							}
 						}
+
+						d_posdata = d_posdata_compact;
+						d_veldata = d_veldata_compact;
+						d_IDs = d_IDs_compact;
+						d_loginfo = d_loginfo_compact;
+						count = (long) kept_count;
 					}
 				}
 			}
@@ -1620,44 +2024,180 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 			if (count > 0)
 			{
 				// fill the IDprelogs
-#pragma omp parallel for
-				for (long i = 0; i < count; i++)
+				int log_bins = IDlog_scatter ? 9 : 1;
+				unsigned long long int bin_counts[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+				unsigned long long int bin_offsets[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+				unsigned long long int total_prelog = 0;
+				int blocks = (count + 255) / 256;
+
+				if (blocks > 65535)
+					blocks = 65535;
+
+				cudaMemset(d_prelog_counts, 0, sizeof(unsigned long long int) * 9);
+				count_lightcone_prelog_bins<<<blocks, 256>>>(d_loginfo, count, log_bins, d_prelog_counts);
+				success = cudaDeviceSynchronize();
+
+				if (success != cudaSuccess)
 				{
-					if (loginfo[i] < 255)
+					throw std::runtime_error("CUDA error in count_lightcone_prelog_bins");
+				}
+
+				cudaMemcpy(bin_counts, d_prelog_counts, sizeof(unsigned long long int) * 9, cudaMemcpyDeviceToHost);
+
+				for (int bin = 0; bin < log_bins; bin++)
+				{
+					bin_offsets[bin] = total_prelog;
+					total_prelog += bin_counts[bin];
+				}
+
+				if (total_prelog > 0)
+				{
+					cudaMemcpy(d_prelog_offsets, bin_offsets, sizeof(unsigned long long int) * 9, cudaMemcpyHostToDevice);
+					cudaMemset(d_prelog_cursors, 0, sizeof(unsigned long long int) * 9);
+					fill_lightcone_prelog_bins<<<blocks, 256>>>(d_IDs, d_loginfo, count, log_bins, d_prelog_offsets, d_prelog_cursors, d_prelog_ids);
+					success = cudaDeviceSynchronize();
+
+					if (success != cudaSuccess)
 					{
-						#pragma omp critical
+						throw std::runtime_error("CUDA error in fill_lightcone_prelog_bins");
+					}
+
+					for (int bin = 0; bin < log_bins; bin++)
+					{
+						if (bin_counts[bin] > 0)
 						{
-							IDprelog[loginfo[i]].push_back(IDs[i]);
+							size_t old_size = IDprelog[bin].size();
+							IDprelog[bin].resize(old_size + bin_counts[bin]);
+							cudaMemcpy(IDprelog[bin].data() + old_size, d_prelog_ids + bin_offsets[bin], sizeof(long) * bin_counts[bin], cudaMemcpyDeviceToHost);
 						}
 					}
 				}
 
-				MPI_File_write_at(outfile, offset_pos, posdata, 3 * count, MPI_FLOAT, &status);
-				offset_pos += 3 * count * sizeof(float);
-				MPI_File_write_at(outfile, offset_vel, veldata, 3 * count, MPI_FLOAT, &status);
-				offset_vel += 3 * count * sizeof(float);
-				count *= sizeof(int64_t);
-				MPI_File_write_at(outfile, offset_ID, IDs, count, MPI_BYTE, &status);
-				offset_ID += count;
+				if (!balanced_io_active)
+				{
+					cudaMemcpy(posdata, d_posdata, 3 * sizeof(float) * count, cudaMemcpyDeviceToHost);
+					cudaMemcpy(veldata, d_veldata, 3 * sizeof(float) * count, cudaMemcpyDeviceToHost);
+					cudaMemcpy(IDs, d_IDs, sizeof(long) * count, cudaMemcpyDeviceToHost);
+
+					MPI_File_write_at(outfile, offset_pos, posdata, 3 * count, MPI_FLOAT, &status);
+					offset_pos += 3 * count * sizeof(float);
+					MPI_File_write_at(outfile, offset_vel, veldata, 3 * count, MPI_FLOAT, &status);
+					offset_vel += 3 * count * sizeof(float);
+					long ID_bytes = count * sizeof(int64_t);
+					MPI_File_write_at(outfile, offset_ID, IDs, ID_bytes, MPI_BYTE, &status);
+					offset_ID += ID_bytes;
+				}
+			}
+
+			if (balanced_io_active)
+			{
+				const int tag_pos = 12011;
+				const int tag_vel = 12012;
+				const int tag_id = 12013;
+				vector<long long> send_counts(parallel.size(), 0);
+				vector<long long> recv_counts(parallel.size(), 0);
+				vector<long long> send_starts(parallel.size(), -1);
+				vector<long long> recv_starts(parallel.size(), -1);
+				vector<MPI_Request> requests;
+				long long chunk_begin = local_particle_cursor;
+				long long chunk_end = chunk_begin + count;
+
+				if (count > 0)
+				{
+					for (int dest = 0; dest < parallel.size(); dest++)
+					{
+						long long dest_begin = lightcone_balanced_partition_begin(total_particles, dest, parallel.size());
+						long long dest_end = lightcone_balanced_partition_begin(total_particles, dest+1, parallel.size());
+						long long segment_begin = std::max(chunk_begin, dest_begin);
+						long long segment_end = std::min(chunk_end, dest_end);
+
+						if (segment_begin < segment_end)
+						{
+							send_starts[dest] = segment_begin;
+							send_counts[dest] = segment_end - segment_begin;
+						}
+					}
+				}
+
+				MPI_Alltoall(send_counts.data(), 1, MPI_LONG_LONG, recv_counts.data(), 1, MPI_LONG_LONG, parallel.lat_world_comm());
+				MPI_Alltoall(send_starts.data(), 1, MPI_LONG_LONG, recv_starts.data(), 1, MPI_LONG_LONG, parallel.lat_world_comm());
+
+				for (int source = 0; source < parallel.size(); source++)
+				{
+					if (source == parallel.rank() || recv_counts[source] <= 0)
+						continue;
+
+					long long recv_offset = recv_starts[source] - writer_begin;
+					lightcone_mpi_irecv_bytes(posdata + 3 * recv_offset, (size_t) recv_counts[source] * 3 * sizeof(float), source, tag_pos, parallel.lat_world_comm(), requests);
+					lightcone_mpi_irecv_bytes(veldata + 3 * recv_offset, (size_t) recv_counts[source] * 3 * sizeof(float), source, tag_vel, parallel.lat_world_comm(), requests);
+					lightcone_mpi_irecv_bytes(IDs + recv_offset, (size_t) recv_counts[source] * sizeof(long), source, tag_id, parallel.lat_world_comm(), requests);
+				}
+
+				if (send_counts[parallel.rank()] > 0)
+				{
+					long long source_offset = send_starts[parallel.rank()] - chunk_begin;
+					long long writer_offset = send_starts[parallel.rank()] - writer_begin;
+
+					cudaMemcpy(posdata + 3 * writer_offset, d_posdata + 3 * source_offset, (size_t) send_counts[parallel.rank()] * 3 * sizeof(float), cudaMemcpyDeviceToHost);
+					cudaMemcpy(veldata + 3 * writer_offset, d_veldata + 3 * source_offset, (size_t) send_counts[parallel.rank()] * 3 * sizeof(float), cudaMemcpyDeviceToHost);
+					cudaMemcpy(IDs + writer_offset, d_IDs + source_offset, (size_t) send_counts[parallel.rank()] * sizeof(long), cudaMemcpyDeviceToHost);
+				}
+
+				for (int dest = 0; dest < parallel.size(); dest++)
+				{
+					if (dest == parallel.rank() || send_counts[dest] <= 0)
+						continue;
+
+					long long source_offset = send_starts[dest] - chunk_begin;
+					lightcone_mpi_isend_bytes(d_posdata + 3 * source_offset, (size_t) send_counts[dest] * 3 * sizeof(float), dest, tag_pos, parallel.lat_world_comm(), requests);
+					lightcone_mpi_isend_bytes(d_veldata + 3 * source_offset, (size_t) send_counts[dest] * 3 * sizeof(float), dest, tag_vel, parallel.lat_world_comm(), requests);
+					lightcone_mpi_isend_bytes(d_IDs + source_offset, (size_t) send_counts[dest] * sizeof(long), dest, tag_id, parallel.lat_world_comm(), requests);
+				}
+
+				if (!requests.empty())
+					MPI_Waitall((int) requests.size(), requests.data(), MPI_STATUSES_IGNORE);
 			}
 			nvtxRangePop();
 
-			row_start += row_count;
+			d_posdata = NULL;
+			d_veldata = NULL;
+			d_IDs = NULL;
+			d_loginfo = NULL;
+			d_posdata_compact = NULL;
+			d_veldata_compact = NULL;
+			d_IDs_compact = NULL;
+			d_loginfo_compact = NULL;
+			d_keep_flags = NULL;
+			d_indices = NULL;
+			d_selected = NULL;
+			d_selected_count = NULL;
+			d_prelog_counts = NULL;
+			d_prelog_offsets = NULL;
+			d_prelog_cursors = NULL;
+			d_prelog_ids = NULL;
+
+			local_particle_cursor += count;
+		}
+
+		if (balanced_io_active)
+		{
+			nvtxRangePushA("write balanced particles to disk");
+			MPI_Barrier(parallel.lat_world_comm());
+			lightcone_mpi_file_write_at_all_bytes(outfile, offset_pos_base + ((MPI_Offset) writer_begin) * ((MPI_Offset) (3 * sizeof(float))), posdata, (unsigned long long int) writer_count * 3 * sizeof(float), parallel.lat_world_comm(), &status);
+			lightcone_mpi_file_write_at_all_bytes(outfile, offset_vel_base + ((MPI_Offset) writer_begin) * ((MPI_Offset) (3 * sizeof(float))), veldata, (unsigned long long int) writer_count * 3 * sizeof(float), parallel.lat_world_comm(), &status);
+			lightcone_mpi_file_write_at_all_bytes(outfile, offset_ID_base + ((MPI_Offset) writer_begin) * ((MPI_Offset) sizeof(int64_t)), IDs, (unsigned long long int) writer_count * sizeof(int64_t), parallel.lat_world_comm(), &status);
+			nvtxRangePop();
 		}
 
 		MPI_File_close(&outfile);
 
 		free(posdata);
 		free(veldata);
-		free(loginfo);
 	}
 
 	free(IDs);
 	free(npart_row);
 	free(npart_checkID_row);
-
-	cudaFree(d_buffer_count1);
-	cudaFree(d_buffer_count2);
 }
 
 

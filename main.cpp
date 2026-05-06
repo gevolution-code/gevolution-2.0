@@ -228,11 +228,11 @@ int main(int argc, char **argv)
 	Field<Real> * update_b_fields[3];
 	Field<Real> * update_ncdm_fields[3];
 	double f_params[7] = {0., 0., 0., 0., 0., 0., 0.};
-	set<long> ** IDbacklog;
+	LightconeIDBacklog ** IDbacklog;
 
-	IDbacklog = new set<long> * [sim.num_IDlogs];
+	IDbacklog = new LightconeIDBacklog * [sim.num_IDlogs];
 	for (int i = 0; i < sim.num_IDlogs; i++)
-		IDbacklog[i] = new set<long> [MAX_PCL_SPECIES];
+		IDbacklog[i] = new LightconeIDBacklog [MAX_PCL_SPECIES];
 
 	Field<Real> phi;
 	Field<Real> source;
