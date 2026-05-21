@@ -6,7 +6,7 @@
 //
 // Author: Julian Adamek (Université de Genève & Observatoire de Paris & Queen Mary University of London & Universität Zürich & ETH Zürich)
 //
-// Last modified: April 2026
+// Last modified: May 2026
 //
 //////////////////////////
 
@@ -2160,7 +2160,7 @@ parameter * params, int & numparam)
 		generateDisplacementField(*scalarFT, 0., tk_d1, (unsigned int) ic.seed, ic.flags & ICFLAG_KSPHERE);
 		gsl_spline_free(tk_d1);
 	}
-		
+
 	plan_chi->execute(FFT_BACKWARD);
 	chi->updateHalo();	// chi now contains the CDM displacement
 	nvtxRangePop();
