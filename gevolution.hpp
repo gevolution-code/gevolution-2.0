@@ -1545,8 +1545,50 @@ void projection_comm1(Field<Real> * field)
 	long buffer_size_z = static_cast<long>(sizeLocal[1]) * static_cast<long>(sizeLocal[0]) * static_cast<long>(field->components());
 	long buffer_size = buffer_size_y>buffer_size_z ? buffer_size_y : buffer_size_z;
 
-	Real * buffer = (Real*) malloc(2*sizeof(Real)*buffer_size);
-	Real * rec_buffer = buffer + buffer_size;
+	auto env_enabled = [](const char *name)
+	{
+		const char *v = std::getenv(name);
+		return v != nullptr && strcmp(v, "0") != 0 && strcmp(v, "false") != 0 && strcmp(v, "FALSE") != 0;
+	};
+
+	const bool cuda_aware =
+		!env_enabled("LATFIELD2_DISABLE_CUDA_AWARE_MPI") &&
+		(
+			env_enabled("LATFIELD2_ENABLE_CUDA_AWARE_MPI") ||
+			env_enabled("MPICH_GPU_SUPPORT_ENABLED") ||
+			env_enabled("MV2_USE_CUDA") ||
+			env_enabled("PSM2_CUDA") ||
+			env_enabled("OMPI_MCA_opal_cuda_support") ||
+			env_enabled("OMPI_MCA_mpi_cuda_support")
+		);
+
+	Real *buffer = nullptr;
+	Real *rec_buffer = nullptr;
+	void *device_workspace = nullptr;
+	bool private_device_workspace = false;
+
+	if (cuda_aware)
+	{
+		size_t workspace_bytes = 2 * sizeof(Real) * buffer_size;
+
+#ifdef FFT3D
+		tempMemory.reserveDeviceWorkspaceBytes(workspace_bytes, "projection_comm1");
+		device_workspace = tempMemory.deviceWorkspace();
+#else
+		auto success = cudaMalloc(&device_workspace, workspace_bytes);
+		if (success != cudaSuccess)
+			throw std::runtime_error("CUDA allocation failed in projection_comm1");
+		private_device_workspace = true;
+#endif
+
+		buffer = static_cast<Real *>(device_workspace);
+		rec_buffer = buffer + buffer_size;
+	}
+	else
+	{
+		buffer = static_cast<Real *>(malloc(2 * sizeof(Real) * buffer_size));
+		rec_buffer = buffer + buffer_size;
+	}
 
 	projection_comm1_localhalo<<<sizeLocal[2]+2, 128>>>(field, sizeLocalGross, halo);
 
@@ -1602,7 +1644,14 @@ void projection_comm1(Field<Real> * field)
 		throw std::runtime_error("Error in projection_comm1_unpack_z");
 	}
 
-	free(buffer);
+	if (cuda_aware)
+	{
+		if (private_device_workspace) cudaFree(device_workspace);
+	}
+	else
+	{
+		free(buffer);
+	}
 }
 
 void projection_Tij_comm2(Field<Real> * field)
@@ -1615,10 +1664,54 @@ void projection_Tij_comm2(Field<Real> * field)
 	long buffer_size_z = static_cast<long>(sizeLocal[1]) * static_cast<long>(sizeLocal[0]) * 6L;
 	long buffer_size = buffer_size_y>buffer_size_z ? buffer_size_y : buffer_size_z;
 
-	Real * buffer = (Real*) malloc(3*sizeof(Real)*buffer_size);
-	Real * rec_buffer = buffer + buffer_size;
-	Real * buffer2 = rec_buffer + buffer_size;
-	Real * rec_buffer2 = buffer2 + buffer_size/2;
+	auto env_enabled = [](const char *name)
+	{
+		const char *v = std::getenv(name);
+		return v != nullptr && strcmp(v, "0") != 0 && strcmp(v, "false") != 0 && strcmp(v, "FALSE") != 0;
+	};
+
+	const bool cuda_aware =
+		!env_enabled("LATFIELD2_DISABLE_CUDA_AWARE_MPI") &&
+		(
+			env_enabled("LATFIELD2_ENABLE_CUDA_AWARE_MPI") ||
+			env_enabled("MPICH_GPU_SUPPORT_ENABLED") ||
+			env_enabled("MV2_USE_CUDA") ||
+			env_enabled("PSM2_CUDA") ||
+			env_enabled("OMPI_MCA_opal_cuda_support") ||
+			env_enabled("OMPI_MCA_mpi_cuda_support")
+		);
+
+	Real *buffer = nullptr;
+	Real *rec_buffer = nullptr;
+	Real *buffer2 = nullptr;
+	Real *rec_buffer2 = nullptr;
+	void *device_workspace = nullptr;
+	bool private_device_workspace = false;
+
+	if (cuda_aware)
+	{
+		size_t workspace_bytes = 3 * sizeof(Real) * buffer_size;
+
+#ifdef FFT3D
+		tempMemory.reserveDeviceWorkspaceBytes(workspace_bytes, "projection_Tij_comm2");
+		device_workspace = tempMemory.deviceWorkspace();
+#else
+		auto success = cudaMalloc(&device_workspace, workspace_bytes);
+		if (success != cudaSuccess)
+			throw std::runtime_error("CUDA allocation failed in projection_Tij_comm2");
+		private_device_workspace = true;
+#endif
+
+		buffer = static_cast<Real *>(device_workspace);
+	}
+	else
+	{
+		buffer = static_cast<Real *>(malloc(3 * sizeof(Real) * buffer_size));
+	}
+
+	rec_buffer = buffer + buffer_size;
+	buffer2 = rec_buffer + buffer_size;
+	rec_buffer2 = buffer2 + buffer_size/2;
 
 	projection_comm1_localhalo<<<sizeLocal[2]+2, 128>>>(field, sizeLocalGross, halo);
 
@@ -1680,7 +1773,14 @@ void projection_Tij_comm2(Field<Real> * field)
 		throw std::runtime_error("Error in projection_comm[1/2]_unpack_z");
 	}
 
-	free(buffer);
+	if (cuda_aware)
+	{
+		if (private_device_workspace) cudaFree(device_workspace);
+	}
+	else
+	{
+		free(buffer);
+	}
 }
 
 #define projection_T00_comm projection_comm1
