@@ -4,13 +4,14 @@
 //
 // Author: Julian Adamek (Université de Genève & Observatoire de Paris & Queen Mary University of London & Universität Zürich & ETH Zürich)
 //
-// Last modified: April 2026
+// Last modified: May 2026
 //
 //////////////////////////
 
 #ifndef PARTICLES_GEVOLUTION_HEADER
 #define PARTICLES_GEVOLUTION_HEADER
 
+#include <cstring>
 #include "particles/LATfield2_perfParticles.hpp"
 #include "lightcone_id_backlog.hpp"
 #include "lightcone_device_workspace.hpp"
@@ -93,6 +94,53 @@ inline void lightcone_mpi_file_write_at_all_bytes(MPI_File file, MPI_Offset offs
 	}
 }
 
+struct express_header
+{
+	char magic[8];
+	uint32_t version;
+	uint32_t header_size;
+	uint32_t endian;
+	uint32_t sizeof_real;
+	uint32_t sizeof_long;
+	uint32_t sizeof_gadget2_header;
+	int32_t rank;
+	int32_t size;
+	int32_t grid_size[2];
+	int32_t lat_size[3];
+	int32_t lat_size_local[3];
+	int32_t coord_skip[2];
+	uint64_t local_npart;
+	uint64_t global_npart;
+	uint64_t position_bytes;
+	uint64_t momentum_bytes;
+	uint64_t id_bytes;
+};
+
+static const char EXPRESS_MAGIC[8] = {'G', 'E', 'X', 'P', 'C', 'D', 'M', '\0'};
+static const uint32_t EXPRESS_VERSION = 1;
+static const uint32_t EXPRESS_ENDIAN = 0x01020304u;
+
+inline string express_rank_filename(string filename, int rank)
+{
+	size_t dot = filename.find_last_of('.');
+	if (dot != string::npos && dot + 1 < filename.size())
+	{
+		bool numeric_suffix = true;
+		for (size_t i = dot + 1; i < filename.size(); i++)
+		{
+			if (filename[i] < '0' || filename[i] > '9')
+			{
+				numeric_suffix = false;
+				break;
+			}
+		}
+		if (numeric_suffix)
+			filename.resize(dot);
+	}
+
+	return filename + "." + to_string(rank);
+}
+
 template <typename part, typename part_info>
 class perfParticles_gevolution;
 
@@ -133,6 +181,8 @@ class perfParticles_gevolution: public perfParticles<part, part_info>
 		void saveGadget2(string filename, gadget2_header & hdr, lightcone_geometry & lightcone, double dist, double dtau, double dtau_old, double dadtau, double vertex[MAX_INTERSECTS][3], const int vertexcount, LightconeIDBacklog & IDbacklog, vector<long> * IDprelog, Field<Real> * phi, const int tracer_factor = 1);
 		void loadGadget2(string filename, gadget2_header & hdr);
 		void loadGadget2_express(string filename, gadget2_header & hdr);
+		void saveExpress(string filename, gadget2_header & hdr);
+		void loadExpress(string filename, gadget2_header & hdr);
 		uint64_t getTotalCapacity() const
 		{
 			return this->total_capacity_;
@@ -2513,6 +2563,266 @@ void perfParticles_gevolution<part,part_info>::loadGadget2(string filename, gadg
 	cudaFree(d_buffer_idx);
 }
 
+template <typename part, typename part_info>
+void perfParticles_gevolution<part,part_info>::saveExpress(string filename, gadget2_header & hdr)
+{
+	if (hdr.num_files != parallel.size())
+	{
+		COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": number of express files must match the number of tasks!" << endl;
+		throw std::runtime_error("Invalid express file count");
+	}
+
+	this->updateRowBuffers();
+
+	long local_npart = (long) this->num_particles_;
+	long global_npart = local_npart;
+	parallel.sum(global_npart);
+
+	hdr.num_files = parallel.size();
+	hdr.npart[1] = (uint32_t) (local_npart & 0xffffffffu);
+	hdr.npartTotal[1] = (uint32_t) (global_npart & 0xffffffffu);
+	hdr.npartTotalHW[1] = (uint32_t) (((uint64_t) global_npart) >> 32);
+
+	express_header ehdr;
+	memset(&ehdr, 0, sizeof(ehdr));
+	memcpy(ehdr.magic, EXPRESS_MAGIC, sizeof(ehdr.magic));
+	ehdr.version = EXPRESS_VERSION;
+	ehdr.header_size = sizeof(ehdr);
+	ehdr.endian = EXPRESS_ENDIAN;
+	ehdr.sizeof_real = sizeof(Real);
+	ehdr.sizeof_long = sizeof(long);
+	ehdr.sizeof_gadget2_header = sizeof(gadget2_header);
+	ehdr.rank = parallel.rank();
+	ehdr.size = parallel.size();
+	ehdr.grid_size[0] = parallel.grid_size()[0];
+	ehdr.grid_size[1] = parallel.grid_size()[1];
+	for (int i = 0; i < 3; i++)
+	{
+		ehdr.lat_size[i] = this->lat_size_[i];
+		ehdr.lat_size_local[i] = this->lat_size_local_[i];
+	}
+	ehdr.coord_skip[0] = this->coordSkip_[0];
+	ehdr.coord_skip[1] = this->coordSkip_[1];
+	ehdr.local_npart = (uint64_t) local_npart;
+	ehdr.global_npart = (uint64_t) global_npart;
+	ehdr.position_bytes = 3 * ehdr.local_npart * sizeof(Real);
+	ehdr.momentum_bytes = 3 * ehdr.local_npart * sizeof(Real);
+	ehdr.id_bytes = ehdr.local_npart * sizeof(long);
+
+	string rank_filename = express_rank_filename(filename, parallel.rank());
+	FILE * outfile = fopen(rank_filename.c_str(), "wb");
+	if (outfile == NULL)
+	{
+		COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": could not open express file " << rank_filename << " for writing!" << endl;
+		throw std::runtime_error("Could not open express output file");
+	}
+
+	if (fwrite(&ehdr, sizeof(ehdr), 1, outfile) != 1)
+	{
+		fclose(outfile);
+		throw std::runtime_error("Could not write express header");
+	}
+
+	Real * real_buffer = (Real *) malloc(3 * sizeof(Real) * PCLBUFFER);
+	long * id_buffer = (long *) malloc(sizeof(long) * PCLBUFFER);
+	if (real_buffer == NULL || id_buffer == NULL)
+	{
+		fclose(outfile);
+		free(real_buffer);
+		free(id_buffer);
+		throw std::runtime_error("Could not allocate express staging buffers");
+	}
+
+	uint64_t written = 0;
+	while (written < ehdr.local_npart)
+	{
+		uint64_t count = (ehdr.local_npart - written > PCLBUFFER) ? PCLBUFFER : (ehdr.local_npart - written);
+		cudaMemcpy(real_buffer, this->p + 3 * written, 3 * count * sizeof(Real), cudaMemcpyDeviceToHost);
+		if (fwrite(real_buffer, sizeof(Real), 3 * count, outfile) != 3 * count)
+		{
+			fclose(outfile);
+			free(real_buffer);
+			free(id_buffer);
+			throw std::runtime_error("Could not write express positions");
+		}
+		written += count;
+	}
+
+	written = 0;
+	while (written < ehdr.local_npart)
+	{
+		uint64_t count = (ehdr.local_npart - written > PCLBUFFER) ? PCLBUFFER : (ehdr.local_npart - written);
+		cudaMemcpy(real_buffer, this->q + 3 * written, 3 * count * sizeof(Real), cudaMemcpyDeviceToHost);
+		if (fwrite(real_buffer, sizeof(Real), 3 * count, outfile) != 3 * count)
+		{
+			fclose(outfile);
+			free(real_buffer);
+			free(id_buffer);
+			throw std::runtime_error("Could not write express momenta");
+		}
+		written += count;
+	}
+
+	written = 0;
+	while (written < ehdr.local_npart)
+	{
+		uint64_t count = (ehdr.local_npart - written > PCLBUFFER) ? PCLBUFFER : (ehdr.local_npart - written);
+		cudaMemcpy(id_buffer, this->other + written, count * sizeof(long), cudaMemcpyDeviceToHost);
+		if (fwrite(id_buffer, sizeof(long), count, outfile) != count)
+		{
+			fclose(outfile);
+			free(real_buffer);
+			free(id_buffer);
+			throw std::runtime_error("Could not write express IDs");
+		}
+		written += count;
+	}
+
+	if (fwrite(&hdr, sizeof(hdr), 1, outfile) != 1)
+	{
+		fclose(outfile);
+		free(real_buffer);
+		free(id_buffer);
+		throw std::runtime_error("Could not write express Gadget2 metadata");
+	}
+
+	fclose(outfile);
+	free(real_buffer);
+	free(id_buffer);
+}
+
+template <typename part, typename part_info>
+void perfParticles_gevolution<part,part_info>::loadExpress(string filename, gadget2_header & hdr)
+{
+	string rank_filename = express_rank_filename(filename, parallel.rank());
+	FILE * infile = fopen(rank_filename.c_str(), "rb");
+	if (infile == NULL)
+	{
+		COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": could not open express file " << rank_filename << "!" << endl;
+		throw std::runtime_error("Could not open express input file");
+	}
+
+	express_header ehdr;
+	if (fread(&ehdr, sizeof(ehdr), 1, infile) != 1)
+	{
+		fclose(infile);
+		throw std::runtime_error("Could not read express header");
+	}
+
+	bool layout_ok = true;
+	layout_ok = layout_ok && memcmp(ehdr.magic, EXPRESS_MAGIC, sizeof(ehdr.magic)) == 0;
+	layout_ok = layout_ok && ehdr.version == EXPRESS_VERSION;
+	layout_ok = layout_ok && ehdr.header_size == sizeof(ehdr);
+	layout_ok = layout_ok && ehdr.endian == EXPRESS_ENDIAN;
+	layout_ok = layout_ok && ehdr.sizeof_real == sizeof(Real);
+	layout_ok = layout_ok && ehdr.sizeof_long == sizeof(long);
+	layout_ok = layout_ok && ehdr.sizeof_gadget2_header == sizeof(gadget2_header);
+	layout_ok = layout_ok && ehdr.rank == parallel.rank();
+	layout_ok = layout_ok && ehdr.size == parallel.size();
+	layout_ok = layout_ok && ehdr.grid_size[0] == parallel.grid_size()[0];
+	layout_ok = layout_ok && ehdr.grid_size[1] == parallel.grid_size()[1];
+	for (int i = 0; i < 3; i++)
+	{
+		layout_ok = layout_ok && ehdr.lat_size[i] == this->lat_size_[i];
+		layout_ok = layout_ok && ehdr.lat_size_local[i] == this->lat_size_local_[i];
+	}
+	layout_ok = layout_ok && ehdr.coord_skip[0] == this->coordSkip_[0];
+	layout_ok = layout_ok && ehdr.coord_skip[1] == this->coordSkip_[1];
+	layout_ok = layout_ok && ehdr.position_bytes == 3 * ehdr.local_npart * sizeof(Real);
+	layout_ok = layout_ok && ehdr.momentum_bytes == 3 * ehdr.local_npart * sizeof(Real);
+	layout_ok = layout_ok && ehdr.id_bytes == ehdr.local_npart * sizeof(long);
+
+	if (!layout_ok)
+	{
+		fclose(infile);
+		COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": express file " << rank_filename << " is incompatible with this run layout or ABI!" << endl;
+		throw std::runtime_error("Incompatible express input file");
+	}
+
+	if (this->total_capacity_ < ehdr.local_npart)
+		this->resizeGlobalBuffers(ehdr.local_npart + this->extra_capacity_);
+
+	Real * real_buffer = (Real *) malloc(3 * sizeof(Real) * PCLBUFFER);
+	long * id_buffer = (long *) malloc(sizeof(long) * PCLBUFFER);
+	if (real_buffer == NULL || id_buffer == NULL)
+	{
+		fclose(infile);
+		free(real_buffer);
+		free(id_buffer);
+		throw std::runtime_error("Could not allocate express staging buffers");
+	}
+
+	uint64_t read = 0;
+	while (read < ehdr.local_npart)
+	{
+		uint64_t count = (ehdr.local_npart - read > PCLBUFFER) ? PCLBUFFER : (ehdr.local_npart - read);
+		if (fread(real_buffer, sizeof(Real), 3 * count, infile) != 3 * count)
+		{
+			fclose(infile);
+			free(real_buffer);
+			free(id_buffer);
+			throw std::runtime_error("Could not read express positions");
+		}
+		cudaMemcpy(this->p + 3 * read, real_buffer, 3 * count * sizeof(Real), cudaMemcpyHostToDevice);
+		read += count;
+	}
+
+	read = 0;
+	while (read < ehdr.local_npart)
+	{
+		uint64_t count = (ehdr.local_npart - read > PCLBUFFER) ? PCLBUFFER : (ehdr.local_npart - read);
+		if (fread(real_buffer, sizeof(Real), 3 * count, infile) != 3 * count)
+		{
+			fclose(infile);
+			free(real_buffer);
+			free(id_buffer);
+			throw std::runtime_error("Could not read express momenta");
+		}
+		cudaMemcpy(this->q + 3 * read, real_buffer, 3 * count * sizeof(Real), cudaMemcpyHostToDevice);
+		read += count;
+	}
+
+	read = 0;
+	while (read < ehdr.local_npart)
+	{
+		uint64_t count = (ehdr.local_npart - read > PCLBUFFER) ? PCLBUFFER : (ehdr.local_npart - read);
+		if (fread(id_buffer, sizeof(long), count, infile) != count)
+		{
+			fclose(infile);
+			free(real_buffer);
+			free(id_buffer);
+			throw std::runtime_error("Could not read express IDs");
+		}
+		cudaMemcpy(this->other + read, id_buffer, count * sizeof(long), cudaMemcpyHostToDevice);
+		read += count;
+	}
+
+	if (fread(&hdr, sizeof(hdr), 1, infile) != 1)
+	{
+		fclose(infile);
+		free(real_buffer);
+		free(id_buffer);
+		throw std::runtime_error("Could not read express Gadget2 metadata");
+	}
+
+	uint64_t hdr_global_npart = (uint64_t) hdr.npartTotal[1] + ((uint64_t) hdr.npartTotalHW[1] << 32);
+	if (hdr_global_npart != ehdr.global_npart || hdr.num_files != ehdr.size)
+	{
+		fclose(infile);
+		free(real_buffer);
+		free(id_buffer);
+		throw std::runtime_error("Express Gadget2 metadata does not match express header");
+	}
+
+	fclose(infile);
+	free(real_buffer);
+	free(id_buffer);
+
+	this->num_particles_ = ehdr.local_npart;
+	if (this->num_particles_ > 0)
+		this->updateRowBuffers();
+}
+
 
 // This particle load function assumes that each rank reads exactly one file, no MPI communication needed
 template <typename part, typename part_info>
@@ -2535,6 +2845,9 @@ void perfParticles_gevolution<part,part_info>::loadGadget2_express(string filena
 #else
 	IDs = malloc(sizeof(int32_t) * PCLBUFFER);
 #endif
+
+	unsigned long long int * d_buffer_idx;
+	cudaMalloc((void **) &d_buffer_idx, sizeof(unsigned long long int));
 
 	filename = filename.substr(0, filename.find_last_of('.')+1) + to_string(parallel.rank());
 
@@ -2630,8 +2943,9 @@ void perfParticles_gevolution<part,part_info>::loadGadget2_express(string filena
 		}
 
 		unsigned long long int buffer_idx = this->num_particles_;
+		cudaMemcpy(d_buffer_idx, &buffer_idx, sizeof(unsigned long long int), cudaMemcpyHostToDevice);
 
-		add_particles<part, part_info><<<count/128+1, 128>>>(this, posdata, veldata, IDs, count, &buffer_idx);
+		add_particles<part, part_info><<<count/128+1, 128>>>(this, posdata, veldata, IDs, count, d_buffer_idx);
 
 		auto success = cudaDeviceSynchronize();
 
@@ -2654,6 +2968,7 @@ void perfParticles_gevolution<part,part_info>::loadGadget2_express(string filena
 	free(posdata);
 	free(veldata);
 	free(IDs);
+	cudaFree(d_buffer_idx);
 }
 
 #endif

@@ -4,9 +4,9 @@
 // 
 // read initial conditions from disk
 //
-// Author: Julian Adamek (Université de Genève & Observatoire de Paris & Queen Mary University of London & Universität Zürich)
+// Author: Julian Adamek (Université de Genève & Observatoire de Paris & Queen Mary University of London & Universität Zürich & ETH Zürich)
 //
-// Last modified: January 2025
+// Last modified: May 2026
 //
 //////////////////////////
 
@@ -56,6 +56,81 @@
 // 
 //////////////////////////
 
+static long readIC_gadget2_total_particles(string filename, gadget2_header & hdr)
+{
+	FILE * infile = fopen(filename.c_str(), "rb");
+	uint32_t blocksize;
+
+	if (infile == NULL)
+	{
+		COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": could not open particle metadata file " << filename << "!" << endl;
+		throw std::runtime_error("Could not open Gadget2 metadata file");
+	}
+
+	if (fread(&blocksize, sizeof(blocksize), 1, infile) != 1 || blocksize != sizeof(hdr) || fread(&hdr, sizeof(hdr), 1, infile) != 1)
+	{
+		fclose(infile);
+		COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": could not read Gadget2 metadata from " << filename << "!" << endl;
+		throw std::runtime_error("Could not read Gadget2 metadata");
+	}
+
+	fclose(infile);
+	return (long) hdr.npartTotal[1] + ((long) hdr.npartTotalHW[1] << 32);
+}
+
+static long readIC_express_total_particles(string filename, gadget2_header & hdr, long * local_particles = NULL)
+{
+	string rank_filename = express_rank_filename(filename, parallel.rank());
+	FILE * infile = fopen(rank_filename.c_str(), "rb");
+	express_header ehdr;
+
+	if (infile == NULL)
+	{
+		COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": could not open express metadata file " << rank_filename << "!" << endl;
+		throw std::runtime_error("Could not open express metadata file");
+	}
+
+	if (fread(&ehdr, sizeof(ehdr), 1, infile) != 1 ||
+		memcmp(ehdr.magic, EXPRESS_MAGIC, sizeof(ehdr.magic)) != 0 ||
+		ehdr.version != EXPRESS_VERSION ||
+		ehdr.header_size != sizeof(ehdr))
+	{
+		fclose(infile);
+		COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": could not read express metadata from " << rank_filename << "!" << endl;
+		throw std::runtime_error("Could not read express metadata");
+	}
+
+	uint64_t hdr_offset = sizeof(ehdr) + ehdr.position_bytes + ehdr.momentum_bytes + ehdr.id_bytes;
+	if (fseek(infile, hdr_offset, SEEK_SET) || fread(&hdr, sizeof(hdr), 1, infile) != 1)
+	{
+		fclose(infile);
+		COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": could not read appended Gadget2 metadata from " << rank_filename << "!" << endl;
+		throw std::runtime_error("Could not read express Gadget2 metadata");
+	}
+
+	fclose(infile);
+
+	long hdr_npart = (long) hdr.npartTotal[1] + ((long) hdr.npartTotalHW[1] << 32);
+	if (hdr_npart != (long) ehdr.global_npart)
+	{
+		COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": express metadata particle count mismatch in " << rank_filename << "!" << endl;
+		throw std::runtime_error("Express metadata particle count mismatch");
+	}
+
+	if (local_particles != NULL)
+		*local_particles = (long) ehdr.local_npart;
+
+	return hdr_npart;
+}
+
+static uint64_t readIC_particle_capacity_estimate(long total_particles)
+{
+	if (total_particles <= 0)
+		return 0;
+
+	return (16L * (uint64_t) total_particles) / (15L * (uint64_t) parallel.size());
+}
+
 void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fourpiG, double & a, double & tau, double & dtau, double & dtau_old, perfParticles_gevolution<part_simple,part_simple_info> * pcls_cdm, perfParticles_gevolution<part_simple,part_simple_info> * pcls_b, Particles_gevolution<part_simple,part_simple_info,part_simple_dataType> * pcls_ncdm, double * maxvel, Field<Real> * phi, Field<Real> * chi, Field<Real> * Bi, Field<Real> * source, Field<Real> * Sij, Field<Cplx> * zetaFT, Field<Cplx> * scalarFT, Field<Cplx> * BiFT, Field<Cplx> * SijFT, PlanFFT<Cplx> * plan_phi, PlanFFT<Cplx> * plan_chi, PlanFFT<Cplx> * plan_Bi, PlanFFT<Cplx> * plan_source, PlanFFT<Cplx> * plan_Sij, int & cycle, int & snapcount, int & pkcount, int & restartcount, LightconeIDBacklog ** IDbacklog)
 {
 	part_simple_info pcls_cdm_info;
@@ -102,6 +177,37 @@ void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fou
 	pcls_cdm_info.mass = 0.;
 	pcls_cdm_info.relativistic = false;
 	
+	uint64_t particle_capacity = 0;
+
+	if ((ext = strstr(ic.pclfile[0], ".h5")) == NULL)
+	{
+		filename.assign(ic.pclfile[0]);
+		if (ic.flags & ICFLAG_EXPRESSREADER)
+		{
+			long local_numpcl = 0;
+			sim.numpcl[0] = readIC_express_total_particles(filename, hdr, &local_numpcl);
+			particle_capacity = local_numpcl;
+			if (particle_capacity < readIC_particle_capacity_estimate(sim.numpcl[0]))
+				particle_capacity = readIC_particle_capacity_estimate(sim.numpcl[0]);
+		}
+		else
+		{
+			sim.numpcl[0] = readIC_gadget2_total_particles(filename, hdr);
+			particle_capacity = readIC_particle_capacity_estimate(sim.numpcl[0]);
+		}
+	}
+
+	if (sim.baryon_flag == 1 && (ext = strstr(ic.pclfile[1], ".h5")) == NULL)
+	{
+		filename.assign(ic.pclfile[1]);
+		sim.numpcl[1] = readIC_gadget2_total_particles(filename, hdr);
+		uint64_t baryon_capacity = readIC_particle_capacity_estimate(sim.numpcl[1]);
+		if (baryon_capacity > particle_capacity)
+			particle_capacity = baryon_capacity;
+	}
+
+	plan_source->preallocate((particle_capacity + PCL_EXTRA_CAPACITY) * 3L * sizeof(Real));
+
 	//pcls_cdm->initialize(pcls_cdm_info, pcls_cdm_dataType, &(phi->lattice()), boxSize);
 	pcls_cdm->initialize(pcls_cdm_info, &(phi->lattice()), boxSize, PCL_EXTRA_CAPACITY, PCL_EXTRA_CAPACITY);
 	
@@ -124,11 +230,9 @@ void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fou
 	else if (ic.flags & ICFLAG_EXPRESSREADER)
 	{
 		filename.assign(ic.pclfile[0]);
-		pcls_cdm->loadGadget2_express(filename, hdr);
+		pcls_cdm->loadExpress(filename, hdr);
 		
-		i = hdr.npart[1];
-		parallel.sum(i);
-		sim.numpcl[0] = i;
+		sim.numpcl[0] = (long) hdr.npartTotal[1] + ((long) hdr.npartTotalHW[1] << 32);
 
 		if (sim.baryon_flag == 1)
 			pcls_cdm->parts_info()->mass = cosmo.Omega_cdm / (Real) sim.numpcl[0];
@@ -147,7 +251,6 @@ void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fou
 			{
 				COUT << COLORTEXT_YELLOW << " /!\\ warning" << COLORTEXT_RESET << ": redshift indicated in Gadget2 header does not match initial redshift of simulation!" << endl;
 			}
-			sim.numpcl[0] += hdr.npart[1];
 			i++;
 			if (hdr.num_files > 1)
 			{
@@ -179,8 +282,6 @@ void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fou
 
 	COUT << " max. |q|/(m a) for cdm particles after IC read: " << maxvel[0] << endl;
 
-	plan_source->preallocate(pcls_cdm->getTotalCapacity() * 3L * sizeof(Real));
-	
 	if (sim.baryon_flag == 1)
 	{
 		strcpy(pcls_b_info.type_name, "part_simple");
@@ -218,8 +319,7 @@ void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fou
 				{
 					COUT << COLORTEXT_YELLOW << " /!\\ warning" << COLORTEXT_RESET << ": redshift indicated in Gadget2 header does not match initial redshift of simulation!" << endl;
 				}
-				sim.numpcl[1] += hdr.npart[1];
-				i++;
+					i++;
 				if (hdr.num_files > 1)
 				{
 					ext = ic.pclfile[1];

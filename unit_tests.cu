@@ -493,6 +493,103 @@ int main(int argc, char **argv)
         }
     }
 
+    COUT << "Testing express particle output and input" << endl;
+
+    filename = "test_output_express";
+    hdr.num_files = parallel.size();
+
+    nvtxRangePushA("test of express output");
+    parallel.barrier();
+    start = std::chrono::high_resolution_clock::now();
+    particles_new.saveExpress(filename, hdr);
+    end = std::chrono::high_resolution_clock::now();
+    nvtxRangePop();
+    benchmark_new = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+
+    uint64_t local_npart = particles_new.num_particles();
+    vector<Real> pos_ref(3 * local_npart);
+    vector<Real> vel_ref(3 * local_npart);
+    vector<long> id_ref(local_npart);
+    vector<Real> pos_read(3 * local_npart);
+    vector<Real> vel_read(3 * local_npart);
+    vector<long> id_read(local_npart);
+
+    particles_new.sampleParticles(pos_ref.data(), vel_ref.data(), id_ref.data(), local_npart);
+
+    perfParticles_gevolution<part_simple, part_simple_info> particles_express_read;
+    particles_express_read.initialize(pcl_info, &lat, boxSize, (uint64_t) (Npcl / n / m), 1024);
+
+    nvtxRangePushA("test of express input");
+    parallel.barrier();
+    start = std::chrono::high_resolution_clock::now();
+    particles_express_read.loadExpress(filename, hdr);
+    end = std::chrono::high_resolution_clock::now();
+    nvtxRangePop();
+    benchmark_old = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+
+    if (particles_express_read.num_particles() != local_npart)
+    {
+        cout << "Error: Express local particle count differs --- Original: " << local_npart << " Read: " << particles_express_read.num_particles() << endl;
+        return 1;
+    }
+
+    particles_express_read.sampleParticles(pos_read.data(), vel_read.data(), id_read.data(), local_npart);
+
+    if (memcmp(pos_ref.data(), pos_read.data(), 3 * local_npart * sizeof(Real)) != 0 ||
+        memcmp(vel_ref.data(), vel_read.data(), 3 * local_npart * sizeof(Real)) != 0 ||
+        memcmp(id_ref.data(), id_read.data(), local_npart * sizeof(long)) != 0)
+    {
+        cout << "Error: Express particle payload differs after readback" << endl;
+        return 1;
+    }
+
+    long express_global_count = particles_express_read.num_particles();
+    parallel.sum(express_global_count);
+    long express_header_count = (long) hdr.npartTotal[1] + ((long) hdr.npartTotalHW[1] << 32);
+    if (express_global_count != express_header_count)
+    {
+        cout << "Error: Express global particle count differs from appended Gadget2 metadata --- Count: " << express_global_count << " Header: " << express_header_count << endl;
+        return 1;
+    }
+
+    express_header bad_ehdr;
+    string good_express_file = express_rank_filename(filename, parallel.rank());
+    string bad_express_file = express_rank_filename("test_output_express_bad", parallel.rank());
+    FILE * good_file = fopen(good_express_file.c_str(), "rb");
+    FILE * bad_file = fopen(bad_express_file.c_str(), "wb");
+    if (good_file == NULL || bad_file == NULL || fread(&bad_ehdr, sizeof(bad_ehdr), 1, good_file) != 1)
+    {
+        cout << "Error: Could not prepare express layout-mismatch test" << endl;
+        if (good_file != NULL) fclose(good_file);
+        if (bad_file != NULL) fclose(bad_file);
+        return 1;
+    }
+    bad_ehdr.grid_size[0]++;
+    fwrite(&bad_ehdr, sizeof(bad_ehdr), 1, bad_file);
+    fclose(good_file);
+    fclose(bad_file);
+
+    bool rejected_bad_layout = false;
+    try
+    {
+        perfParticles_gevolution<part_simple, part_simple_info> particles_bad_read;
+        particles_bad_read.initialize(pcl_info, &lat, boxSize, 1024, 1024);
+        particles_bad_read.loadExpress("test_output_express_bad", hdr);
+    }
+    catch (const std::runtime_error &)
+    {
+        rejected_bad_layout = true;
+    }
+
+    if (!rejected_bad_layout)
+    {
+        cout << "Error: Express reader accepted a mismatched layout" << endl;
+        return 1;
+    }
+
+    COUT << "Express particle output and input successful" << endl;
+    COUT << "Benchmark: express output " << benchmark_new << " us, express input " << benchmark_old << " us" << endl << endl;
+
     COUT << "Unit tests successful" << endl << endl;
 
     //return 0;
@@ -564,5 +661,4 @@ int main(int argc, char **argv)
 
     return 0;
 }
-
 
