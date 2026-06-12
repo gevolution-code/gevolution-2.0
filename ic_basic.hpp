@@ -1119,6 +1119,16 @@ void generateCICKernel(Field<Real> & ker, const long numpcl = 0, float * pcldata
 
 #ifdef FFT3D
 
+inline float boxMullerRadialAmplitude(const float uniform)
+{
+#ifdef FIXED_ICS
+	(void) uniform;
+	return sqrt(2.0f);
+#else
+	return sqrt(-2.0f * log(uniform));
+#endif
+}
+
 //////////////////////////
 // generateDisplacementField (generateRealization)
 //////////////////////////
@@ -1243,17 +1253,17 @@ void generateDisplacementField(Field<Cplx> & potFT, const Real coeff, const gsl_
 						while (r1 == 0);
 
 						r2 = (float) prng() / (float) sitmo::prng_engine::max();
+						r1 = boxMullerRadialAmplitude(r1);
 						//i++;
 					
 						if constexpr (ignorekernel == 0)
 						{
-							potFT(k) = Cplx(cos(2.0f * M_PI * r2), sin(2.0f * M_PI * r2)) * (1.0f + 7.5f * static_cast<float>(coeff) / k2) * sqrt(-2.0f * log(r1)) * gsl_spline_eval(pkspline, sqrt(k2), acc) * s / potFT(k);
+							potFT(k) = Cplx(cos(2.0f * M_PI * r2), sin(2.0f * M_PI * r2)) * (1.0f + 7.5f * static_cast<float>(coeff) / k2) * r1 * gsl_spline_eval(pkspline, sqrt(k2), acc) * s / potFT(k);
 						}
 						else
 						{
-							potFT(k) = Cplx(cos(2.0f * M_PI * r2), sin(2.0f * M_PI * r2)) * sqrt(-2.0f * log(r1)) * gsl_spline_eval(pkspline, sqrt(k2), acc) * s;
+							potFT(k) = Cplx(cos(2.0f * M_PI * r2), sin(2.0f * M_PI * r2)) * r1 * gsl_spline_eval(pkspline, sqrt(k2), acc) * s;
 						}
-						//potFT(k) = (constexpr ignorekernel ? Cplx(cos(2.0f * M_PI * r2), sin(2.0f * M_PI * r2)) : Cplx(cos(2.0f * M_PI * r2), sin(2.0f * M_PI * r2)) * (1.0f + 7.5f * static_cast<float>(coeff) / k2) / potFT(k)) * sqrt(-2.0f * log(r1)) * gsl_spline_eval(pkspline, sqrt(k2), acc) * s;
 					}
 				}
 				//prng.discard(huge_skip - (uint64_t) i);
@@ -1306,17 +1316,17 @@ void generateDisplacementField(Field<Cplx> & potFT, const Real coeff, const gsl_
 						}
 						while (r1 == 0);
 						r2 = (float) prng() / (float) sitmo::prng_engine::max();
+						r1 = boxMullerRadialAmplitude(r1);
 						//i++;
 						
 						if constexpr (ignorekernel == 0)
 						{
-							potFT(k) = Cplx(cos(2.0f * M_PI * r2), sin(2.0f * M_PI * r2)) * (1.0f + 7.5f * static_cast<float>(coeff) / k2) * sqrt(-2.0f * log(r1)) * gsl_spline_eval(pkspline, sqrt(k2), acc) * s / potFT(k);
+							potFT(k) = Cplx(cos(2.0f * M_PI * r2), sin(2.0f * M_PI * r2)) * (1.0f + 7.5f * static_cast<float>(coeff) / k2) * r1 * gsl_spline_eval(pkspline, sqrt(k2), acc) * s / potFT(k);
 						}
 						else
 						{
-							potFT(k) = Cplx(cos(2.0f * M_PI * r2), sin(2.0f * M_PI * r2)) * sqrt(-2.0f * log(r1)) * gsl_spline_eval(pkspline, sqrt(k2), acc) * s;
+							potFT(k) = Cplx(cos(2.0f * M_PI * r2), sin(2.0f * M_PI * r2)) * r1 * gsl_spline_eval(pkspline, sqrt(k2), acc) * s;
 						}
-						//potFT(k) = (constexpr ignorekernel ? Cplx(cos(2.0f * M_PI * r2), sin(2.0f * M_PI * r2)) : Cplx(cos(2.0f * M_PI * r2), sin(2.0f * M_PI * r2)) * (1.0f + 7.5f * static_cast<float>(coeff) / k2) / potFT(k)) * sqrt(-2.0f * log(r1)) * gsl_spline_eval(pkspline, sqrt(k2), acc) * s;
 					}
 				}
 				//prng.discard(huge_skip - (uint64_t) i);
@@ -1371,17 +1381,17 @@ void generateDisplacementField(Field<Cplx> & potFT, const Real coeff, const gsl_
 						}
 						while (r1 == 0);
 						r2 = (float) prng() / (float) sitmo::prng_engine::max();
+						r1 = boxMullerRadialAmplitude(r1);
 						//i++;
 					
 						if constexpr (ignorekernel == 0)
 						{
-							potFT(k) = Cplx(cos(2.0f * M_PI * r2), sin(2.0f * M_PI * r2)) * (1.0f + 7.5f * static_cast<float>(coeff) / k2) * sqrt(-2.0f * log(r1)) * gsl_spline_eval(pkspline, sqrt(k2), acc) * s / potFT(k);
+							potFT(k) = Cplx(cos(2.0f * M_PI * r2), sin(2.0f * M_PI * r2)) * (1.0f + 7.5f * static_cast<float>(coeff) / k2) * r1 * gsl_spline_eval(pkspline, sqrt(k2), acc) * s / potFT(k);
 						}
 						else
 						{
-							potFT(k) = Cplx(cos(2.0f * M_PI * r2), sin(2.0f * M_PI * r2)) * sqrt(-2.0f * log(r1)) * gsl_spline_eval(pkspline, sqrt(k2), acc) * s;
+							potFT(k) = Cplx(cos(2.0f * M_PI * r2), sin(2.0f * M_PI * r2)) * r1 * gsl_spline_eval(pkspline, sqrt(k2), acc) * s;
 						}
-						//potFT(k) = (constexpr ignorekernel ? Cplx(cos(2.0f * M_PI * r2), sin(2.0f * M_PI * r2)) : Cplx(cos(2.0f * M_PI * r2), sin(2.0f * M_PI * r2)) * (1.0f + 7.5f * static_cast<float>(coeff) / k2) / potFT(k)) * sqrt(-2.0f * log(r1)) * gsl_spline_eval(pkspline, sqrt(k2), acc) * s;
 					}
 				}
 				//prng.discard(huge_skip - (uint64_t) i);
@@ -1421,17 +1431,17 @@ void generateDisplacementField(Field<Cplx> & potFT, const Real coeff, const gsl_
 					}
 					while (r1 == 0);
 					r2 = (float) prng() / (float) sitmo::prng_engine::max();
+					r1 = boxMullerRadialAmplitude(r1);
 					//i++;
 				
 					if constexpr (ignorekernel == 0)
 					{
-						potFT(k) = Cplx(cos(2.0f * M_PI * r2), -sin(2.0f * M_PI * r2)) * (1.0f + 7.5f * static_cast<float>(coeff) / k2) * sqrt(-2.0f * log(r1)) * gsl_spline_eval(pkspline, sqrt(k2), acc) * s / potFT(k);
+						potFT(k) = Cplx(cos(2.0f * M_PI * r2), -sin(2.0f * M_PI * r2)) * (1.0f + 7.5f * static_cast<float>(coeff) / k2) * r1 * gsl_spline_eval(pkspline, sqrt(k2), acc) * s / potFT(k);
 					}
 					else
 					{
-						potFT(k) = Cplx(cos(2.0f * M_PI * r2), -sin(2.0f * M_PI * r2)) * sqrt(-2.0f * log(r1)) * gsl_spline_eval(pkspline, sqrt(k2), acc) * s;
+						potFT(k) = Cplx(cos(2.0f * M_PI * r2), -sin(2.0f * M_PI * r2)) * r1 * gsl_spline_eval(pkspline, sqrt(k2), acc) * s;
 					}
-					//potFT(k) = (constexpr ignorekernel? Cplx(cos(2.0f * M_PI * r2), -sin(2.0f * M_PI * r2)) : Cplx(cos(2.0f * M_PI * r2), -sin(2.0f * M_PI * r2)) * (1.0f + 7.5f * static_cast<float>(coeff) / k2) / potFT(k)) * sqrt(-2.0f * log(r1)) * gsl_spline_eval(pkspline, sqrt(k2), acc) * s;
 				}
 								
 				//prng.discard(huge_skip - (uint64_t) i);
@@ -1484,17 +1494,17 @@ void generateDisplacementField(Field<Cplx> & potFT, const Real coeff, const gsl_
 						}
 						while (r1 == 0);
 						r2 = (float) prng() / (float) sitmo::prng_engine::max();
+						r1 = boxMullerRadialAmplitude(r1);
 						//i++;
 					
 						if constexpr (ignorekernel == 0)
 						{
-							potFT(k) = Cplx(cos(2.0f * M_PI * r2), sin(2.0f * M_PI * r2)) * (1.0f + 7.5f * static_cast<float>(coeff) / k2) * sqrt(-2.0f * log(r1)) * gsl_spline_eval(pkspline, sqrt(k2), acc) * s / potFT(k);
+							potFT(k) = Cplx(cos(2.0f * M_PI * r2), sin(2.0f * M_PI * r2)) * (1.0f + 7.5f * static_cast<float>(coeff) / k2) * r1 * gsl_spline_eval(pkspline, sqrt(k2), acc) * s / potFT(k);
 						}
 						else
 						{
-							potFT(k) = Cplx(cos(2.0f * M_PI * r2), sin(2.0f * M_PI * r2)) * sqrt(-2.0f * log(r1)) * gsl_spline_eval(pkspline, sqrt(k2), acc) * s;
+							potFT(k) = Cplx(cos(2.0f * M_PI * r2), sin(2.0f * M_PI * r2)) * r1 * gsl_spline_eval(pkspline, sqrt(k2), acc) * s;
 						}
-						//potFT(k) = (constexpr ignorekernel ? Cplx(cos(2.0f * M_PI * r2), sin(2.0f * M_PI * r2)) : Cplx(cos(2.0f * M_PI * r2), sin(2.0f * M_PI * r2)) * (1.0f + 7.5f * static_cast<float>(coeff) / k2) / potFT(k)) * sqrt(-2.0f * log(r1)) * gsl_spline_eval(pkspline, sqrt(k2), acc) * s;
 					}
 				}
 				//prng.discard(huge_skip - (uint64_t) i);
@@ -1534,17 +1544,17 @@ void generateDisplacementField(Field<Cplx> & potFT, const Real coeff, const gsl_
 					}
 					while (r1 == 0);
 					r2 = (float) prng() / (float) sitmo::prng_engine::max();
+					r1 = boxMullerRadialAmplitude(r1);
 					//i++;
 				
 					if constexpr (ignorekernel == 0)
 					{
-						potFT(k) = Cplx(cos(2.0f * M_PI * r2), -sin(2.0f * M_PI * r2)) * (1.0f + 7.5f * static_cast<float>(coeff) / k2) * sqrt(-2.0f * log(r1)) * gsl_spline_eval(pkspline, sqrt(k2), acc) * s / potFT(k);
+						potFT(k) = Cplx(cos(2.0f * M_PI * r2), -sin(2.0f * M_PI * r2)) * (1.0f + 7.5f * static_cast<float>(coeff) / k2) * r1 * gsl_spline_eval(pkspline, sqrt(k2), acc) * s / potFT(k);
 					}
 					else
 					{
-						potFT(k) = Cplx(cos(2.0f * M_PI * r2), -sin(2.0f * M_PI * r2)) * sqrt(-2.0f * log(r1)) * gsl_spline_eval(pkspline, sqrt(k2), acc) * s;
+						potFT(k) = Cplx(cos(2.0f * M_PI * r2), -sin(2.0f * M_PI * r2)) * r1 * gsl_spline_eval(pkspline, sqrt(k2), acc) * s;
 					}
-					//potFT(k) = (constexpr ignorekernel ? Cplx(cos(2.0f * M_PI * r2), -sin(2.0f * M_PI * r2)) : Cplx(cos(2.0f * M_PI * r2), -sin(2.0f * M_PI * r2)) * (1.0f + 7.5f * static_cast<float>(coeff) / k2) / potFT(k)) * sqrt(-2.0f * log(r1)) * gsl_spline_eval(pkspline, sqrt(k2), acc) * s;
 				}
 				
 				//prng.discard(huge_skip - (uint64_t) i);

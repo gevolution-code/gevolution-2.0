@@ -10,8 +10,10 @@
 #include "particles/LATfield2_Particles.hpp"
 #include "particles/LATfield2_perfParticles.hpp"
 #include "metadata.hpp"
+#include "background.hpp"
 #include "Particles_gevolution.hpp"
 #include "gevolution.hpp"
+#include "ic_basic.hpp"
 #include <gsl/gsl_rng.h>
 
 #ifndef VELOCITY_DECAY
@@ -153,6 +155,18 @@ int main(int argc, char **argv)
     }
 
     nvtxMarkA("parsing finished");
+
+    const float radial_uniform = 0.25f;
+#ifdef FIXED_ICS
+    const float expected_radial_amplitude = sqrt(2.0f);
+#else
+    const float expected_radial_amplitude = sqrt(-2.0f * log(radial_uniform));
+#endif
+    if (fabs(boxMullerRadialAmplitude(radial_uniform) - expected_radial_amplitude) > 1.e-6f)
+    {
+        cout << "Error: Box-Muller radial-amplitude policy is incorrect" << endl;
+        return 1;
+    }
 
     // create a lattice with size Ngrid^3
     Lattice lat(3, Ngrid, 2);
@@ -661,4 +675,3 @@ int main(int argc, char **argv)
 
     return 0;
 }
-

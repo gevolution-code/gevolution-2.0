@@ -2012,7 +2012,7 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 				cudaMemset(d_buffer_count1, 0, sizeof(unsigned long long int));
 				cudaMemcpy(d_buffer_count2, &buffer_count2, sizeof(unsigned long long int), cudaMemcpyHostToDevice);
 
-				buffer_tracer_particles<part, part_info, IDlog_scatter><<<row_count, 128>>>(this, tracer_factor, lightcone, (Real) dist, inner, outer, dtau, dtau_old, (double) hdr.time, dadtau, this->boxSize_[0], domain, phi, vertex, vertexcount, d_posdata, d_veldata, d_IDs, d_loginfo, row_start, d_buffer_count1, d_buffer_count2);
+				buffer_tracer_particles<part, part_info, IDlog_scatter><<<row_count, 128>>>(this, tracer_factor, lightcone, (Real) dist, inner, outer, dtau, dtau_old, (double) hdr.time, dadtau, hdr.BoxSize, domain, phi, vertex, vertexcount, d_posdata, d_veldata, d_IDs, d_loginfo, row_start, d_buffer_count1, d_buffer_count2);
 
 				success = cudaDeviceSynchronize();
 

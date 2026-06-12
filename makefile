@@ -22,6 +22,7 @@ DGEVOLUTION  := -DPHINONLINEAR
 DGEVOLUTION  += -DBENCHMARK
 DGEVOLUTION  += -DEXACT_OUTPUT_REDSHIFTS
 #DGEVOLUTION  += -DVELOCITY      # enables velocity field utilities
+#DGEVOLUTION  += -DFIXED_ICS     # fixed-amplitude, random-phase generated initial conditions
 DGEVOLUTION  += -DCOLORTERMINAL
 #DGEVOLUTION  += -DCHECK_B
 DGEVOLUTION  += -DHAVE_CLASS    # requires LIB -lclass
