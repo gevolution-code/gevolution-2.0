@@ -14,7 +14,7 @@ DLATFIELD2   := -DFFT3D -DHDF5
 
 # optional compiler settings (LATfield2)
 DLATFIELD2   += -DH5_HAVE_PARALLEL
-#DLATFIELD2   += -DEXTERNAL_IO # enables I/O server (use with care)
+#DLATFIELD2   += -DEXTERNAL_IO # currently unsupported: LATfield2 I/O server is not yet ported to the GPU backend
 DLATFIELD2   += -DSINGLE      # switches to single precision, use LIB -lfftw3f
 
 # optional compiler settings (gevolution)
@@ -40,6 +40,10 @@ $(EXEC): $(SOURCE) $(HEADERS) makefile
 
 unit-tests: unit_tests.cu $(HEADERS) makefile
 	$(COMPILER) $< -o $@ $(OPT) $(DLATFIELD2) $(DGEVOLUTION) $(INCLUDE) $(LIB) -DGADGET_LENGTH_CONVERSION=1 -DGADGET_VELOCITY_CONVERSION=1
+
+parser-tests: tests/parser_tests.cpp parser.hpp metadata.hpp
+	$(CXX) -std=c++17 -Wall -Wextra -pedantic $< -o /tmp/gevolution-parser-tests
+	/tmp/gevolution-parser-tests
 	
 lccat: lccat.cpp
 	g++ $< -o $@ $(OPT_GCC) $(DGEVOLUTION) $(INCLUDE)
@@ -76,4 +80,3 @@ scaling-test: $(EXEC)
 
 clean:
 	-rm -f $(EXEC) lccat lcmap unit-tests
-

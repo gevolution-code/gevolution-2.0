@@ -6,7 +6,7 @@
 //
 // Author: Julian Adamek (Université de Genève & Observatoire de Paris & Queen Mary University of London & Universität Zürich & ETH Zürich)
 //
-// Last modified: May 2026
+// Last modified: June 2026
 //
 //////////////////////////
 
@@ -226,6 +226,7 @@ void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fou
 		free(dummy1);
 		free(dummy2);*/
 		COUT << " error: HDF5 input not supported for CDM particles!" << endl;
+		throw std::runtime_error("HDF5 input is not supported for CDM particles");
 	}
 	else if (ic.flags & ICFLAG_EXPRESSREADER)
 	{
@@ -306,6 +307,7 @@ void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fou
 			free(dummy1);
 			free(dummy2);*/
 			COUT << " error: HDF5 input not supported for baryon particles!" << endl;
+			throw std::runtime_error("HDF5 input is not supported for baryon particles");
 		}
 		else
 		{
@@ -341,7 +343,7 @@ void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fou
 		
 	for (p = 0; p < cosmo.num_ncdm; p++)
 	{
-		if (ic.numtile[1+sim.baryon_flag+i] < 1)
+		if (ic.numtile[1+sim.baryon_flag+p] < 1)
 		{
 			maxvel[sim.baryon_flag+1+p] = 0;
 			continue;

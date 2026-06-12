@@ -28,9 +28,13 @@
 //
 // Author: Julian Adamek (Université de Genève & Observatoire de Paris & Queen Mary University of London & Universität Zürich & ETH Zürich)
 //
-// Last modified: April 2026
+// Last modified: June 2026
 //
 //////////////////////////
+
+#ifdef EXTERNAL_IO
+#error "EXTERNAL_IO is not supported by gevolution 2.0: the LATfield2 I/O server has not yet been ported to the GPU backend."
+#endif
 
 #include <thrust/sort.h>
 #include <thrust/device_vector.h>
@@ -162,6 +166,12 @@ int main(int argc, char **argv)
 		}
 	}
 
+	if (n < 2 || m < 2)
+	{
+		cerr << " error: process-grid dimensions -n and -m must both be at least 2 because LATfield2 communication requires distinct neighbouring ranks." << endl;
+		return -1;
+	}
+
 #ifndef EXTERNAL_IO
 	parallel.initialize(n,m);
 #else
@@ -214,9 +224,21 @@ int main(int argc, char **argv)
 	
 	start_time = MPI_Wtime();
 	
+	clearParserDiagnostics();
 	numparam = loadParameterFile(settingsfile, params);
 	
 	usedparams = parseMetadata(params, numparam, sim, cosmo, ic);
+
+	int world_size = 0;
+	MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+	if ((long long) world_size != (long long) n * (long long) m)
+		addParserDiagnostic(true, 0, "process grid", NULL, "the launched MPI rank count must equal n * m");
+	if (sim.numpts % n != 0)
+		addParserDiagnostic(true, 0, "Ngrid", NULL, "Ngrid must be divisible by -n");
+	if (sim.numpts % m != 0 || (sim.numpts / m) % 2 != 0)
+		addParserDiagnostic(true, 0, "Ngrid", NULL, "Ngrid / -m must be an even integer");
+
+	abortOnParserErrors();
 	
 	COUT << " parsing of settings file completed. " << numparam << " parameters found, " << usedparams << " were used." << endl;
 	
@@ -1208,38 +1230,15 @@ int main(int argc, char **argv)
 			parallel.max(tmp);
 			if (tmp > sim.wallclocklimit)   // hibernate
 			{
-				COUT << COLORTEXT_YELLOW << " reaching hibernation wallclock limit, hibernating..." << COLORTEXT_RESET << endl;
-				COUT << COLORTEXT_CYAN << " writing hibernation point" << COLORTEXT_RESET << " at z = " << ((1./a) - 1.) <<  " (cycle " << cycle << "), tau/boxsize = " << tau << endl;
-				if (sim.vector_flag == VECTOR_PARABOLIC && sim.gr_flag == 0)
-					plan_Bi.execute(FFT_BACKWARD);
-#ifdef CHECK_B
-				if (sim.vector_flag == VECTOR_ELLIPTIC)
-				{
-					plan_Bi_check.execute(FFT_BACKWARD);
-					//hibernate(sim, ic, cosmo, &pcls_cdm, &pcls_b, pcls_ncdm, phi, chi, Bi_check, a, tau, dtau, cycle); // FIXME
-				}
-				else
-#endif
-				//hibernate(sim, ic, cosmo, &pcls_cdm, &pcls_b, pcls_ncdm, phi, chi, Bi, a, tau, dtau, cycle); // FIXME
-				break;
+				COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": hibernation wallclock limit reached, but GPU checkpoint writing is not implemented." << endl;
+				parallel.abortForce();
 			}
 		}
 		
 		if (restartcount < sim.num_restart && 1. / a < sim.z_restart[restartcount] + 1.)
 		{
-			COUT << COLORTEXT_CYAN << " writing hibernation point" << COLORTEXT_RESET << " at z = " << ((1./a) - 1.) <<  " (cycle " << cycle << "), tau/boxsize = " << tau << endl;
-			if (sim.vector_flag == VECTOR_PARABOLIC && sim.gr_flag == 0)
-				plan_Bi.execute(FFT_BACKWARD);
-#ifdef CHECK_B
-			if (sim.vector_flag == VECTOR_ELLIPTIC)
-			{
-				plan_Bi_check.execute(FFT_BACKWARD);
-				//hibernate(sim, ic, cosmo, &pcls_cdm, &pcls_b, pcls_ncdm, phi, chi, Bi_check, a, tau, dtau, cycle, restartcount);  // FIXME
-			}
-			else
-#endif
-			//hibernate(sim, ic, cosmo, &pcls_cdm, &pcls_b, pcls_ncdm, phi, chi, Bi, a, tau, dtau, cycle, restartcount);  // FIXME
-			restartcount++;
+			COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": hibernation redshift reached, but GPU checkpoint writing is not implemented." << endl;
+			parallel.abortForce();
 		}
 		
 		dtau_old = dtau;

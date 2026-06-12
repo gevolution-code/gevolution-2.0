@@ -4,7 +4,7 @@
 //
 // Author: Julian Adamek (Université de Genève & Observatoire de Paris & Queen Mary University of London & Universität Zürich & ETH Zürich)
 //
-// Last modified: May 2026
+// Last modified: June 2026
 //
 //////////////////////////
 
@@ -13,6 +13,7 @@
 
 #include <cstring>
 #include "particles/LATfield2_perfParticles.hpp"
+#include "cuda_aware_mpi.hpp"
 #include "lightcone_id_backlog.hpp"
 #include "lightcone_device_workspace.hpp"
 #include <algorithm>
@@ -1586,6 +1587,7 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 #else
 	bool balanced_io_active = false;
 #endif
+	const bool cuda_aware_mpi_active = gevolution_cuda_aware_mpi_active();
 	cudaError_t success;
 
 	if (hdr.num_files != 1)
@@ -1721,6 +1723,7 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<long>(max_buffer_count);
 	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::align_up(select_temp_bytes);
 
+#ifdef DEBUG_DEVICE_WORKSPACE
 	if (parallel.rank() == 0)
 	{
 		cout << " particle light-cone workspace request: persistent=" << persistent_workspace_bytes
@@ -1734,6 +1737,7 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 #endif
 		     << endl;
 	}
+#endif
 
 	LightconeDeviceWorkspace function_workspace(persistent_workspace_bytes + std::max(check_phase_workspace_bytes, buffer_phase_workspace_bytes), "particle light-cone buffers", "temporary buffer workspace");
 
@@ -2149,8 +2153,27 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 				vector<long long> send_starts(parallel.size(), -1);
 				vector<long long> recv_starts(parallel.size(), -1);
 				vector<MPI_Request> requests;
+				vector<float> host_pos_send;
+				vector<float> host_vel_send;
+				vector<long> host_ID_send;
+				const float * mpi_pos_send = d_posdata;
+				const float * mpi_vel_send = d_veldata;
+				const long * mpi_ID_send = d_IDs;
 				long long chunk_begin = local_particle_cursor;
 				long long chunk_end = chunk_begin + count;
+
+				if (!cuda_aware_mpi_active && count > 0)
+				{
+					host_pos_send.resize((size_t) count * 3);
+					host_vel_send.resize((size_t) count * 3);
+					host_ID_send.resize((size_t) count);
+					cudaMemcpy(host_pos_send.data(), d_posdata, (size_t) count * 3 * sizeof(float), cudaMemcpyDeviceToHost);
+					cudaMemcpy(host_vel_send.data(), d_veldata, (size_t) count * 3 * sizeof(float), cudaMemcpyDeviceToHost);
+					cudaMemcpy(host_ID_send.data(), d_IDs, (size_t) count * sizeof(long), cudaMemcpyDeviceToHost);
+					mpi_pos_send = host_pos_send.data();
+					mpi_vel_send = host_vel_send.data();
+					mpi_ID_send = host_ID_send.data();
+				}
 
 				if (count > 0)
 				{
@@ -2199,9 +2222,9 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 						continue;
 
 					long long source_offset = send_starts[dest] - chunk_begin;
-					lightcone_mpi_isend_bytes(d_posdata + 3 * source_offset, (size_t) send_counts[dest] * 3 * sizeof(float), dest, tag_pos, parallel.lat_world_comm(), requests);
-					lightcone_mpi_isend_bytes(d_veldata + 3 * source_offset, (size_t) send_counts[dest] * 3 * sizeof(float), dest, tag_vel, parallel.lat_world_comm(), requests);
-					lightcone_mpi_isend_bytes(d_IDs + source_offset, (size_t) send_counts[dest] * sizeof(long), dest, tag_id, parallel.lat_world_comm(), requests);
+					lightcone_mpi_isend_bytes(mpi_pos_send + 3 * source_offset, (size_t) send_counts[dest] * 3 * sizeof(float), dest, tag_pos, parallel.lat_world_comm(), requests);
+					lightcone_mpi_isend_bytes(mpi_vel_send + 3 * source_offset, (size_t) send_counts[dest] * 3 * sizeof(float), dest, tag_vel, parallel.lat_world_comm(), requests);
+					lightcone_mpi_isend_bytes(mpi_ID_send + source_offset, (size_t) send_counts[dest] * sizeof(long), dest, tag_id, parallel.lat_world_comm(), requests);
 				}
 
 				if (!requests.empty())

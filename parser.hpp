@@ -4,9 +4,9 @@
 // 
 // Parser for settings file
 //
-// Author: Julian Adamek (Université de Genève & Observatoire de Paris & Queen Mary University of London & Universität Zürich)
+// Author: Julian Adamek (Université de Genève & Observatoire de Paris & Queen Mary University of London & Universität Zürich & ETH Zürich)
 //
-// Last modified: September 2024
+// Last modified: June 2026
 //
 //////////////////////////
 
@@ -16,8 +16,17 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <errno.h>
+#include <cstdint>
+#include <iostream>
+#include <limits.h>
+#include <math.h>
 #include <map>
+#include <sstream>
+#include <stdexcept>
+#include <string>
 #include <tuple>
+#include <vector>
 #include "metadata.hpp"
 
 using namespace std;
@@ -27,7 +36,125 @@ struct parameter
 	char name[PARAM_MAX_LENGTH];
 	char value[PARAM_MAX_LENGTH];
 	bool used;
+	int line;
 };
+
+struct parser_diagnostic
+{
+	bool error;
+	int line;
+	string parameter;
+	string value;
+	string message;
+};
+
+static vector<parser_diagnostic> parser_diagnostics;
+
+void clearParserDiagnostics()
+{
+	parser_diagnostics.clear();
+}
+
+void addParserDiagnostic(const bool error, const int line, const char * parameter, const char * value, const string & message)
+{
+	parser_diagnostic diagnostic;
+	diagnostic.error = error;
+	diagnostic.line = line;
+	diagnostic.parameter = parameter == NULL ? "" : parameter;
+	diagnostic.value = value == NULL ? "" : value;
+	diagnostic.message = message;
+	parser_diagnostics.push_back(diagnostic);
+}
+
+void addParserError(const parameter & param, const string & message)
+{
+	addParserDiagnostic(true, param.line, param.name, param.value, message);
+}
+
+int parserErrorCount()
+{
+	int count = 0;
+	for (size_t i = 0; i < parser_diagnostics.size(); i++)
+		if (parser_diagnostics[i].error) count++;
+	return count;
+}
+
+void printParserDiagnostics()
+{
+#ifdef LATFIELD2_HPP
+	if (!parallel.isRoot()) return;
+#endif
+	for (size_t i = 0; i < parser_diagnostics.size(); i++)
+	{
+		const parser_diagnostic & diagnostic = parser_diagnostics[i];
+		cout << (diagnostic.error ? COLORTEXT_RED " error" : COLORTEXT_YELLOW " /!\\ warning") << COLORTEXT_RESET;
+		if (diagnostic.line > 0) cout << " at settings line " << diagnostic.line;
+		if (!diagnostic.parameter.empty()) cout << " for '" << diagnostic.parameter << "'";
+		if (!diagnostic.value.empty()) cout << " = '" << diagnostic.value << "'";
+		cout << ": " << diagnostic.message << endl;
+	}
+}
+
+void abortOnParserErrors()
+{
+	printParserDiagnostics();
+	if (parserErrorCount() > 0)
+	{
+#ifdef LATFIELD2_HPP
+		if (parallel.isRoot())
+#endif
+			cout << COLORTEXT_RED << " aborting" << COLORTEXT_RESET << ": settings validation found " << parserErrorCount() << " error(s)." << endl;
+#ifdef LATFIELD2_HPP
+		parallel.abortForce();
+#else
+		throw runtime_error("settings validation failed");
+#endif
+	}
+	clearParserDiagnostics();
+}
+
+int findParameter(parameter * params, const int numparam, const char * pname)
+{
+	for (int i = 0; i < numparam; i++)
+		if (strcmp(params[i].name, pname) == 0) return i;
+	return -1;
+}
+
+void addParameterError(parameter * params, const int numparam, const char * pname, const string & message)
+{
+	const int index = findParameter(params, numparam, pname);
+	if (index >= 0)
+		addParserError(params[index], message);
+	else
+		addParserDiagnostic(true, 0, pname, NULL, message);
+}
+
+void addParameterWarning(parameter * params, const int numparam, const char * pname, const string & message)
+{
+	const int index = findParameter(params, numparam, pname);
+	if (index >= 0)
+		addParserDiagnostic(false, params[index].line, params[index].name, params[index].value, message);
+	else
+		addParserDiagnostic(false, 0, pname, NULL, message);
+}
+
+bool strictInteger(const char * text, long & value)
+{
+	char * end;
+	errno = 0;
+	value = strtol(text, &end, 10);
+	while (*end == ' ' || *end == '\t') end++;
+	return end != text && *end == '\0' && errno != ERANGE;
+}
+
+bool strictDouble(const char * text, double & value)
+{
+	char * end;
+	errno = 0;
+	value = strtod(text, &end);
+	while (*end == ' ' || *end == '\t') end++;
+	return end != text && *end == '\0' && errno != ERANGE && isfinite(value);
+}
 
 
 int sort_descending(const void * z1, const void * z2)
@@ -125,6 +252,7 @@ int loadParameterFile(const char * filename, parameter * & params)
 {
 	int numparam = 0;
 	int i = 0;
+	int line_number = 0;
 
 #ifdef LATFIELD2_HPP	
 	if (parallel.grid_rank()[0] == 0) // read file
@@ -151,8 +279,25 @@ int loadParameterFile(const char * filename, parameter * & params)
 		while (!feof(paramfile) && !ferror(paramfile))
 		{
 			if (fgets(line, PARAM_MAX_LINESIZE, paramfile) == NULL) break;
+			line_number++;
+
+			if (strchr(line, '\n') == NULL && !feof(paramfile))
+			{
+				int ch;
+				while ((ch = fgetc(paramfile)) != '\n' && ch != EOF);
+				addParserDiagnostic(true, line_number, NULL, NULL, "line exceeds PARAM_MAX_LINESIZE");
+				continue;
+			}
 			
-			if (readline(line, pname, pvalue) == true) numparam++;
+			if (readline(line, pname, pvalue) == true)
+				numparam++;
+			else
+			{
+				char * equal = strchr(line, '=');
+				char * hash = strchr(line, '#');
+				if (equal != NULL && (hash == NULL || equal < hash))
+					addParserDiagnostic(true, line_number, NULL, NULL, "malformed parameter declaration or parameter/value exceeds PARAM_MAX_LENGTH");
+			}
 		}
 		
 		if (numparam == 0)
@@ -182,14 +327,23 @@ int loadParameterFile(const char * filename, parameter * & params)
 		}
 		
 		rewind(paramfile);
+		line_number = 0;
 		
 		while (!feof(paramfile) && !ferror(paramfile) && i < numparam)
 		{
 			if (fgets(line, PARAM_MAX_LINESIZE, paramfile) == NULL) break;
+			line_number++;
+			if (strchr(line, '\n') == NULL && !feof(paramfile))
+			{
+				int ch;
+				while ((ch = fgetc(paramfile)) != '\n' && ch != EOF);
+				continue;
+			}
 			
 			if (readline(line, params[i].name, params[i].value) == true)
 			{
 				params[i].used = false;
+				params[i].line = line_number;
 				i++;
 			}
 		}
@@ -206,6 +360,21 @@ int loadParameterFile(const char * filename, parameter * & params)
 			cerr << " error in loadParameterFile! File may have changed or file pointer corrupted." << endl;
 			return -1;
 #endif
+		}
+
+		for (i = 0; i < numparam; i++)
+		{
+			for (int j = 0; j < i; j++)
+			{
+				if (strcmp(params[i].name, params[j].name) == 0)
+				{
+					if (strcmp(params[i].value, params[j].value) == 0)
+						addParserDiagnostic(false, params[i].line, params[i].name, params[i].value, "duplicate parameter repeats the value from an earlier line; the first occurrence is used");
+					else
+						addParserDiagnostic(true, params[i].line, params[i].name, params[i].value, "conflicting duplicate parameter; the first occurrence is used");
+					break;
+				}
+			}
 		}
 
 #ifdef LATFIELD2_HPP		
@@ -298,11 +467,16 @@ bool parseParameter(parameter * & params, const int numparam, const char * pname
 	{
 		if (strcmp(params[i].name, pname) == 0)
 		{
-			if (sscanf(params[i].value, "%d", &pvalue) == 1)
+			long value;
+			if (strictInteger(params[i].value, value) && value >= INT_MIN && value <= INT_MAX)
 			{
+				pvalue = (int) value;
 				params[i].used = true;
 				return true;
 			}
+			addParserError(params[i], "expected one integer with no trailing characters");
+			params[i].used = true;
+			return false;
 		}
 	}
 	
@@ -333,11 +507,16 @@ bool parseParameter(parameter * & params, const int numparam, const char * pname
 	{
 		if (strcmp(params[i].name, pname) == 0)
 		{
-			if (sscanf(params[i].value, "%ld", &pvalue) == 1)
+			long value;
+			if (strictInteger(params[i].value, value))
 			{
+				pvalue = value;
 				params[i].used = true;
 				return true;
 			}
+			addParserError(params[i], "expected one integer with no trailing characters");
+			params[i].used = true;
+			return false;
 		}
 	}
 	
@@ -368,11 +547,16 @@ bool parseParameter(parameter * & params, const int numparam, const char * pname
 	{
 		if (strcmp(params[i].name, pname) == 0)
 		{
-			if (sscanf(params[i].value, "%lf", &pvalue) == 1)
+			double value;
+			if (strictDouble(params[i].value, value))
 			{
+				pvalue = value;
 				params[i].used = true;
 				return true;
 			}
+			addParserError(params[i], "expected one finite number with no trailing characters");
+			params[i].used = true;
+			return false;
 		}
 	}
 	
@@ -433,45 +617,38 @@ bool parseParameter(parameter * & params, const int numparam, const char * pname
 
 bool parseParameter(parameter * & params, const int numparam, const char * pname, double * pvalue, int & nmax)
 {
-	char * start;
-	char * comma;
-	char item[PARAM_MAX_LENGTH];
+	const int index = findParameter(params, numparam, pname);
+	if (index < 0) { nmax = 0; return false; }
+	const int capacity = nmax;
+	string value(params[index].value);
+	size_t start = 0;
 	int n = 0;
-	   
-	for (int i = 0; i < numparam; i++)
+	while (true)
 	{
-		if (strcmp(params[i].name, pname) == 0)
+		const size_t comma = value.find(',', start);
+		const string item = value.substr(start, comma == string::npos ? string::npos : comma-start);
+		double parsed;
+		if (n >= capacity)
 		{
-			start = params[i].value;
-			if (nmax > 1)
-			{
-				while ((comma = strchr(start, ',')) != NULL)
-				{
-					strncpy(item, start, comma-start);
-					item[comma-start] = '\0';
-					if (sscanf(item, " %lf ", pvalue+n) != 1)
-					{
-						nmax = n;
-						return false;
-					}
-					start = comma+1;
-					if (++n > nmax-2)
-						break;
-				}
-			}   
-			if (sscanf(start, " %lf ", pvalue+n) != 1)
-			{
-				nmax = n;
-				return false;
-			}
-			nmax = ++n;
-			params[i].used = true;
-			return true;
+			addParserError(params[index], "list exceeds the fixed capacity for this parameter");
+			nmax = 0;
+			params[index].used = true;
+			return false;
 		}
+		if (!strictDouble(item.c_str(), parsed))
+		{
+			addParserError(params[index], "expected a comma-separated list of finite numbers");
+			nmax = 0;
+			params[index].used = true;
+			return false;
+		}
+		pvalue[n++] = parsed;
+		if (comma == string::npos) break;
+		start = comma + 1;
 	}
-	
-	nmax = 0;
-	return false;
+	nmax = n;
+	params[index].used = true;
+	return true;
 }
 
 
@@ -495,45 +672,38 @@ bool parseParameter(parameter * & params, const int numparam, const char * pname
 
 bool parseParameter(parameter * & params, const int numparam, const char * pname, int * pvalue, int & nmax)
 {
-	char * start;
-	char * comma;
-	char item[PARAM_MAX_LENGTH];
+	const int index = findParameter(params, numparam, pname);
+	if (index < 0) { nmax = 0; return false; }
+	const int capacity = nmax;
+	string value(params[index].value);
+	size_t start = 0;
 	int n = 0;
-	   
-	for (int i = 0; i < numparam; i++)
+	while (true)
 	{
-		if (strcmp(params[i].name, pname) == 0)
+		const size_t comma = value.find(',', start);
+		const string item = value.substr(start, comma == string::npos ? string::npos : comma-start);
+		long parsed;
+		if (n >= capacity)
 		{
-			start = params[i].value;
-			if (nmax > 1)
-			{
-				while ((comma = strchr(start, ',')) != NULL)
-				{
-					strncpy(item, start, comma-start);
-					item[comma-start] = '\0';
-					if (sscanf(item, " %d ", pvalue+n) != 1)
-					{
-						nmax = n;
-						return false;
-					}
-					start = comma+1;
-					if (++n > nmax-2)
-						break;
-				}
-			}   
-			if (sscanf(start, " %d ", pvalue+n) != 1)
-			{
-				nmax = n;
-				return false;
-			}
-			nmax = ++n;
-			params[i].used = true;
-			return true;
+			addParserError(params[index], "list exceeds the fixed capacity for this parameter");
+			nmax = 0;
+			params[index].used = true;
+			return false;
 		}
+		if (!strictInteger(item.c_str(), parsed) || parsed < INT_MIN || parsed > INT_MAX)
+		{
+			addParserError(params[index], "expected a comma-separated list of integers");
+			nmax = 0;
+			params[index].used = true;
+			return false;
+		}
+		pvalue[n++] = (int) parsed;
+		if (comma == string::npos) break;
+		start = comma + 1;
 	}
-	
-	nmax = 0;
-	return false;
+	nmax = n;
+	params[index].used = true;
+	return true;
 }
 
 
@@ -557,69 +727,73 @@ bool parseParameter(parameter * & params, const int numparam, const char * pname
 
 bool parseParameter(parameter * & params, const int numparam, const char * pname, char ** pvalue, int & nmax)
 {
-	char * start;
-	char * comma;
-	char * l;
-	char * r;
+	const int index = findParameter(params, numparam, pname);
+	if (index < 0) { nmax = 0; return false; }
+	const int capacity = nmax;
+	string value(params[index].value);
+	size_t start = 0;
 	int n = 0;
-	   
-	for (int i = 0; i < numparam; i++)
+	while (true)
 	{
-		if (strcmp(params[i].name, pname) == 0)
+		const size_t comma = value.find(',', start);
+		string item = value.substr(start, comma == string::npos ? string::npos : comma-start);
+		const size_t first = item.find_first_not_of(" \t");
+		const size_t last = item.find_last_not_of(" \t");
+		if (n >= capacity)
 		{
-			start = params[i].value;
-			if (nmax > 1)
-			{
-				while ((comma = strchr(start, ',')) != NULL)
-				{
-					l = start;
-					while (*l == ' ' || *l == '\t') l++;
-					r = comma-1;
-					while ((*r == ' ' || *r == '\t') && r > start) r--;
-					
-					if (r < l)
-					{
-						nmax = n;
-						return false;
-					}
-					
-					strncpy(pvalue[n], l, r-l+1);
-					pvalue[n][r-l+1] = '\0';
-					
-					start = comma+1;
-					if (++n > nmax-2)
-						break;
-				}
-			}
-			l = start;
-			while (*l == ' ' || *l == '\t') l++;
-			r = l;
-			while (*r != ' ' && *r != '\t' && *r != '\0') r++;
-			r--;
-			
-			if (r < l)
-			{
-				nmax = n;
-				return false;
-			}
-			
-			strncpy(pvalue[n], l, r-l+1);
-			pvalue[n][r-l+1] = '\0';
-			
-			nmax = ++n;
-			params[i].used = true;
-			return true;
+			addParserError(params[index], "list exceeds the fixed capacity for this parameter");
+			nmax = 0;
+			params[index].used = true;
+			return false;
 		}
+		if (first == string::npos)
+		{
+			addParserError(params[index], "list contains an empty item");
+			nmax = 0;
+			params[index].used = true;
+			return false;
+		}
+		item = item.substr(first, last-first+1);
+		if (item.size() >= PARAM_MAX_LENGTH)
+		{
+			addParserError(params[index], "list item exceeds PARAM_MAX_LENGTH");
+			nmax = 0;
+			params[index].used = true;
+			return false;
+		}
+		strcpy(pvalue[n++], item.c_str());
+		if (comma == string::npos) break;
+		start = comma + 1;
 	}
-	
-	nmax = 0;
-	return false;
+	nmax = n;
+	params[index].used = true;
+	return true;
 }
 
 
 //////////////////////////
 // parseFieldSpecifiers
 //////////////////////////
+bool knownFieldSpecifier(const char * item)
+{
+	return strcmp(item, "Phi") == 0 || strcmp(item, "phi") == 0
+		|| strcmp(item, "Chi") == 0 || strcmp(item, "chi") == 0
+		|| strcmp(item, "Pot") == 0 || strcmp(item, "pot") == 0 || strcmp(item, "Psi_N") == 0 || strcmp(item, "psi_N") == 0 || strcmp(item, "PsiN") == 0 || strcmp(item, "psiN") == 0
+		|| strcmp(item, "B") == 0 || strcmp(item, "Bi") == 0
+		|| strcmp(item, "P") == 0 || strcmp(item, "p") == 0
+		|| strcmp(item, "T00") == 0 || strcmp(item, "rho") == 0
+		|| strcmp(item, "Tij") == 0
+		|| strcmp(item, "rho_N") == 0 || strcmp(item, "rhoN") == 0
+		|| strcmp(item, "hij") == 0 || strcmp(item, "GW") == 0
+		|| strcmp(item, "Gadget") == 0 || strcmp(item, "Gadget2") == 0 || strcmp(item, "gadget") == 0 || strcmp(item, "gadget2") == 0
+		|| strcmp(item, "multi-Gadget") == 0 || strcmp(item, "multi-Gadget2") == 0 || strcmp(item, "multi-gadget") == 0 || strcmp(item, "multi-gadget2") == 0
+		|| strcmp(item, "Particles") == 0 || strcmp(item, "particles") == 0 || strcmp(item, "pcls") == 0 || strcmp(item, "part") == 0
+		|| strcmp(item, "cross") == 0 || strcmp(item, "X-spectra") == 0 || strcmp(item, "x-spectra") == 0
+		|| strcmp(item, "delta") == 0 || strcmp(item, "Ds") == 0 || strcmp(item, "D_s") == 0
+		|| strcmp(item, "delta_N") == 0 || strcmp(item, "deltaN") == 0
+		|| strcmp(item, "v") == 0 || strcmp(item, "velocity") == 0;
+}
+
 // Description:
 //   searches parameter array for specified parameter name and parses it as a list of comma-separated field specifiers
 // 
@@ -655,6 +829,8 @@ bool parseFieldSpecifiers(parameter * & params, const int numparam, const char *
 					if (item[pos-1] != ' ' && item[pos-1] != '\t') break;
 				}
 				item[pos] = '\0';
+				if (!knownFieldSpecifier(item))
+					addParserDiagnostic(false, params[i].line, params[i].name, item, "unknown output specifier will be ignored");
 				
 				if (strcmp(item, "Phi") == 0 || strcmp(item, "phi") == 0)
 					pvalue |= MASK_PHI;
@@ -692,6 +868,9 @@ bool parseFieldSpecifiers(parameter * & params, const int numparam, const char *
 				start = comma+1;
 				while (*start == ' ' || *start == '\t') start++;
 			}  
+
+			if (!knownFieldSpecifier(start))
+				addParserDiagnostic(false, params[i].line, params[i].name, start, "unknown output specifier will be ignored");
 			
 			if (strcmp(start, "Phi") == 0 || strcmp(start, "phi") == 0)
 				pvalue |= MASK_PHI;
@@ -764,6 +943,12 @@ int parseMetadata(parameter * & params, const int numparam, metadata & sim, cosm
 	int usedparams = 0;
 	int i;
 	double tmp;
+
+	// Gravity is needed by some IC validation before the main metadata block.
+	sim.gr_flag = 1;
+	const int gravity_index = findParameter(params, numparam, "gravity theory");
+	if (gravity_index >= 0 && (params[gravity_index].value[0] == 'N' || params[gravity_index].value[0] == 'n'))
+		sim.gr_flag = 0;
 
 	// parse settings for IC generator
 	
@@ -920,16 +1105,16 @@ int parseMetadata(parameter * & params, const int numparam, metadata & sim, cosm
 
 	if (ic.numtile[0] <= 0 && ic.generator != ICGEN_READ_FROM_DISK)
 	{
-		COUT << COLORTEXT_YELLOW << " /!\\ warning" << COLORTEXT_RESET << ": tiling number for cdm particle template not set properly; using default value (1)" << endl;
+		addParameterError(params, numparam, "tiling factor", "CDM tiling factor must be greater than zero");
 		ic.numtile[0] = 1;
 	}
 	
 	for (i = 1; i < MAX_PCL_SPECIES; i++)
 	{
-		if (ic.numtile[i] < 0 && ic.generator != ICGEN_READ_FROM_DISK)
+		if (ic.numtile[i] < 0)
 		{
-			COUT << COLORTEXT_YELLOW << " /!\\ warning" << COLORTEXT_RESET << ": tiling number for particle template not set properly; using default value (1)" << endl;
-			ic.numtile[i] = 1;
+			addParameterError(params, numparam, "tiling factor", "tiling factors must not be negative");
+			ic.numtile[i] = 0;
 		}
 		else if (ic.generator == ICGEN_READ_FROM_DISK && strcmp(ic.pclfile[i], "/dev/null") != 0)
 			ic.numtile[i] = 1;
@@ -988,7 +1173,7 @@ int parseMetadata(parameter * & params, const int numparam, metadata & sim, cosm
 
 	if (sim.baryon_flag == 1 && ic.numtile[1] <= 0 && ic.generator != ICGEN_READ_FROM_DISK)
 	{
-		COUT << COLORTEXT_YELLOW << " /!\\ warning" << COLORTEXT_RESET << ": tiling number for baryon particle template not set properly; using default value (1)" << endl;
+		addParameterError(params, numparam, "tiling factor", "sampled baryon tiling factor must be greater than zero");
 		ic.numtile[1] = 1;
 	}
 	
@@ -1215,52 +1400,70 @@ int parseMetadata(parameter * & params, const int numparam, metadata & sim, cosm
 	parseParameter(params, numparam, "boxsize", sim.boxsize);
 	if (sim.boxsize <= 0. || !isfinite(sim.boxsize))
 	{
-		COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": simulation box size not set properly!" << endl;
-#ifdef LATFIELD2_HPP
-		parallel.abortForce();
-#endif
+		addParameterError(params, numparam, "boxsize", "must be a finite value greater than zero");
+		sim.boxsize = 1.;
 	}
 	
 	parseParameter(params, numparam, "Ngrid", sim.numpts);
-	if (sim.numpts < 2 || !isfinite(sim.numpts))
+	if (sim.numpts < 2)
 	{
-		COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": number of grid points not set properly!" << endl;
-#ifdef LATFIELD2_HPP
-		parallel.abortForce();
-#endif
+		addParameterError(params, numparam, "Ngrid", "must be an integer greater than or equal to 2");
+		sim.numpts = 2;
+	}
+	else if ((double) sim.numpts > cbrt((double) LONG_MAX))
+	{
+		addParameterError(params, numparam, "Ngrid", "Ngrid cubed exceeds the supported mesh-size range");
+		sim.numpts = 2;
 	}
 
 	if (parseParameter(params, numparam, "downgrade factor", sim.downgrade_factor))
 	{
 		if (sim.downgrade_factor < 1 || sim.downgrade_factor >= sim.numpts || !isfinite(sim.downgrade_factor))
 		{
-			COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": downgrade factor makes no sense!" << endl;
-#ifdef LATFIELD2_HPP
-			parallel.abortForce();
+			addParameterError(params, numparam, "downgrade factor", "must be at least 1 and smaller than Ngrid");
+			sim.downgrade_factor = 1;
 		}
+#ifdef LATFIELD2_HPP
 		if (sim.downgrade_factor > 1 && (sim.numpts % parallel.grid_size()[0] || sim.numpts % parallel.grid_size()[1] || (sim.numpts / parallel.grid_size()[0]) % sim.downgrade_factor || (sim.numpts / parallel.grid_size()[1]) % sim.downgrade_factor))
 		{
-			COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": downgrade factor does not appear to be compatible with process layout at given Ngrid!" << endl;
-			parallel.abortForce();
-#endif
+			addParameterError(params, numparam, "downgrade factor", "is incompatible with Ngrid and the selected process layout");
 		}
+#endif
 	}
 
 	parseParameter(params, numparam, "Courant factor", sim.Cf);
+	if (!isfinite(sim.Cf) || sim.Cf <= 0.)
+	{
+		addParameterError(params, numparam, "Courant factor", "must be a finite value greater than zero");
+		sim.Cf = 1.;
+	}
 
 	if (ic.Cf < 0.) ic.Cf = sim.Cf;
 	
 	parseParameter(params, numparam, "time step limit", sim.steplimit);
+	if (!isfinite(sim.steplimit) || sim.steplimit <= 0.)
+	{
+		addParameterError(params, numparam, "time step limit", "must be a finite value greater than zero");
+		sim.steplimit = 1.;
+	}
 	
 	if (!parseParameter(params, numparam, "move limit", sim.movelimit))
 		sim.movelimit = (double) sim.numpts;
+	if (!isfinite(sim.movelimit) || sim.movelimit <= 0.)
+	{
+		addParameterError(params, numparam, "move limit", "must be a finite value greater than zero");
+		sim.movelimit = sim.numpts;
+	}
 	
 	if (!parseParameter(params, numparam, "initial redshift", sim.z_in))
 	{
-		COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": initial redshift not specified!" << endl;
-#ifdef LATFIELD2_HPP
-		parallel.abortForce();
-#endif
+		addParameterError(params, numparam, "initial redshift", "is required");
+		sim.z_in = 0.;
+	}
+	else if (!isfinite(sim.z_in) || sim.z_in <= -1.)
+	{
+		addParameterError(params, numparam, "initial redshift", "must be finite and greater than -1");
+		sim.z_in = 0.;
 	}
 	if (ic.z_relax < -1.) ic.z_relax = sim.z_in;
 
@@ -1289,9 +1492,24 @@ int parseMetadata(parameter * & params, const int numparam, metadata & sim, cosm
 
 	if(!parseParameter(params, numparam, "lightcone shell factor", sim.shellfactor[0]))
 		sim.shellfactor[0] = 1.;
+	if (!isfinite(sim.shellfactor[0]) || sim.shellfactor[0] <= 0.)
+	{
+		addParameterError(params, numparam, "lightcone shell factor", "must be a finite value greater than zero");
+		sim.shellfactor[0] = 1.;
+	}
 
 	if(!parseParameter(params, numparam, "lightcone covering", sim.covering[0]))
 		sim.covering[0] = 2. + 4. / sim.Cf / sim.shellfactor[0];
+	if (!isfinite(sim.covering[0]) || sim.covering[0] <= 0.)
+	{
+		addParameterError(params, numparam, "lightcone covering", "must be a finite value greater than zero");
+		sim.covering[0] = 2. + 4. / sim.Cf / sim.shellfactor[0];
+	}
+	if (!isfinite(sim.pixelfactor[0]) || sim.pixelfactor[0] <= 0.)
+	{
+		addParameterError(params, numparam, "lightcone pixel factor", "must be a finite value greater than zero");
+		sim.pixelfactor[0] = 0.5;
+	}
 
 	i = 2;
 	if(parseParameter(params, numparam, "lightcone Nside", sim.Nside[0], i))
@@ -1302,6 +1520,12 @@ int parseMetadata(parameter * & params, const int numparam, metadata & sim, cosm
 			sim.Nside[0][0] = 2;
 		}
 		if (i < 2) sim.Nside[0][1] = sim.Nside[0][0];
+		if (sim.Nside[0][0] > 16384 || sim.Nside[0][1] > 16384)
+		{
+			addParameterError(params, numparam, "lightcone Nside", "must not exceed 16384 because the pixel index uses 32-bit storage");
+			sim.Nside[0][0] = 2;
+			sim.Nside[0][1] = 2;
+		}
 		if (sim.Nside[0][0] < 2)
 		{
 			COUT << COLORTEXT_YELLOW << " /!\\ warning" << COLORTEXT_RESET << ": lightcone Nside parameter out of bounds, assuming minimum value Nside=2" << endl;
@@ -1334,7 +1558,8 @@ int parseMetadata(parameter * & params, const int numparam, metadata & sim, cosm
 	else
 	{
 		sim.Nside[0][0] = 2;
-		for (sim.Nside[0][1] = 2; sim.Nside[0][1] < sim.numpts; sim.Nside[0][1] *= 2);
+		for (sim.Nside[0][1] = 2; sim.Nside[0][1] < sim.numpts && sim.Nside[0][1] < 16384; sim.Nside[0][1] *= 2);
+		if (sim.Nside[0][1] > 16384) sim.Nside[0][1] = 16384;
 	}
 
 	for (i = 1; i < MAX_OUTPUTS; i++)
@@ -1405,9 +1630,19 @@ int parseMetadata(parameter * & params, const int numparam, metadata & sim, cosm
 				else if (i == 3)
 				{
 					tmp = sqrt(sim.lightcone[0].direction[0] * sim.lightcone[0].direction[0] + sim.lightcone[0].direction[1] * sim.lightcone[0].direction[1] + sim.lightcone[0].direction[2] * sim.lightcone[0].direction[2]);
-					sim.lightcone[0].direction[0] /= tmp;
-					sim.lightcone[0].direction[1] /= tmp;
-					sim.lightcone[0].direction[2] /= tmp;
+					if (!isfinite(tmp) || tmp <= 0.)
+					{
+						addParameterError(params, numparam, "lightcone direction", "Cartesian direction must have a finite, non-zero norm");
+						sim.lightcone[0].direction[0] = 0.;
+						sim.lightcone[0].direction[1] = 0.;
+						sim.lightcone[0].direction[2] = 1.;
+					}
+					else
+					{
+						sim.lightcone[0].direction[0] /= tmp;
+						sim.lightcone[0].direction[1] /= tmp;
+						sim.lightcone[0].direction[2] /= tmp;
+					}
 				}
 				else
 				{
@@ -1495,9 +1730,19 @@ int parseMetadata(parameter * & params, const int numparam, metadata & sim, cosm
 						else if (i == 3)
 						{
 							tmp = sqrt(sim.lightcone[sim.num_lightcone].direction[0] * sim.lightcone[sim.num_lightcone].direction[0] + sim.lightcone[sim.num_lightcone].direction[1] * sim.lightcone[sim.num_lightcone].direction[1] + sim.lightcone[sim.num_lightcone].direction[2] * sim.lightcone[sim.num_lightcone].direction[2]);
-							sim.lightcone[sim.num_lightcone].direction[0] /= tmp;
-							sim.lightcone[sim.num_lightcone].direction[1] /= tmp;
-							sim.lightcone[sim.num_lightcone].direction[2] /= tmp;
+							if (!isfinite(tmp) || tmp <= 0.)
+							{
+								addParameterError(params, numparam, par_string, "Cartesian direction must have a finite, non-zero norm");
+								sim.lightcone[sim.num_lightcone].direction[0] = 0.;
+								sim.lightcone[sim.num_lightcone].direction[1] = 0.;
+								sim.lightcone[sim.num_lightcone].direction[2] = 1.;
+							}
+							else
+							{
+								sim.lightcone[sim.num_lightcone].direction[0] /= tmp;
+								sim.lightcone[sim.num_lightcone].direction[1] /= tmp;
+								sim.lightcone[sim.num_lightcone].direction[2] /= tmp;
+							}
 						}
 						else
 						{
@@ -1527,6 +1772,12 @@ int parseMetadata(parameter * & params, const int numparam, metadata & sim, cosm
 							sim.Nside[sim.num_lightcone][0] = 2;
 						}
 						if (i < 2) sim.Nside[sim.num_lightcone][1] = sim.Nside[sim.num_lightcone][0];
+						if (sim.Nside[sim.num_lightcone][0] > 16384 || sim.Nside[sim.num_lightcone][1] > 16384)
+						{
+							addParameterError(params, numparam, par_string, "must not exceed 16384 because the pixel index uses 32-bit storage");
+							sim.Nside[sim.num_lightcone][0] = 2;
+							sim.Nside[sim.num_lightcone][1] = 2;
+						}
 						if (sim.Nside[sim.num_lightcone][0] < 2)
 						{
 							COUT << COLORTEXT_YELLOW << " /!\\ warning" << COLORTEXT_RESET << ": lightcone Nside parameter out of bounds, assuming minimum value Nside=2" << endl;
@@ -1595,7 +1846,7 @@ int parseMetadata(parameter * & params, const int numparam, metadata & sim, cosm
 		}
 	}
 	
-	if ((sim.num_snapshot <= 0 || sim.out_snapshot == 0) && (sim.num_pk <= 0 || sim.out_pk == 0))
+	if ((sim.num_snapshot <= 0 || sim.out_snapshot == 0) && (sim.num_pk <= 0 || sim.out_pk == 0) && sim.num_lightcone == 0)
 	{
 		COUT << COLORTEXT_YELLOW << " /!\\ warning" << COLORTEXT_RESET << ": no output specified!" << endl;
 	}
@@ -1603,6 +1854,11 @@ int parseMetadata(parameter * & params, const int numparam, metadata & sim, cosm
 	if (!parseParameter(params, numparam, "Pk bins", sim.numbins))
 	{
 		COUT << COLORTEXT_YELLOW << " /!\\ warning" << COLORTEXT_RESET << ": number of Pk bins not set properly; using default value (64)" << endl;
+		sim.numbins = 64;
+	}
+	else if (sim.numbins <= 0)
+	{
+		addParameterError(params, numparam, "Pk bins", "must be an integer greater than zero");
 		sim.numbins = 64;
 	}
 	
@@ -1642,6 +1898,11 @@ int parseMetadata(parameter * & params, const int numparam, metadata & sim, cosm
 	{
 		cosmo.h = P_HUBBLE;
 	}
+	if (!isfinite(cosmo.h) || cosmo.h <= 0.)
+	{
+		addParameterError(params, numparam, "h", "must be a finite value greater than zero");
+		cosmo.h = P_HUBBLE;
+	}
 	
 	cosmo.num_ncdm = MAX_PCL_SPECIES-2;
 	if (!parseParameter(params, numparam, "m_ncdm", cosmo.m_ncdm, cosmo.num_ncdm))
@@ -1652,19 +1913,15 @@ int parseMetadata(parameter * & params, const int numparam, metadata & sim, cosm
 	
 	if (parseParameter(params, numparam, "N_ncdm", i))
 	{
-		if (i < 0 || !isfinite(i))
+		if (i < 0)
 		{
-			COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": number of ncdm species not set properly!" << endl;
-#ifdef LATFIELD2_HPP
-			parallel.abortForce();
-#endif
+			addParameterError(params, numparam, "N_ncdm", "must not be negative");
+			i = 0;
 		}
 		if (i > cosmo.num_ncdm)
 		{
-			COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": N_ncdm = " << i << " is larger than the number of mass parameters specified (" << cosmo.num_ncdm << ")!" << endl;
-#ifdef LATFIELD2_HPP
-			parallel.abortForce();
-#endif
+			addParameterError(params, numparam, "N_ncdm", "must not exceed the number of entries in m_ncdm");
+			i = cosmo.num_ncdm;
 		}
 		cosmo.num_ncdm = i;
 	}
@@ -1684,6 +1941,21 @@ int parseMetadata(parameter * & params, const int numparam, metadata & sim, cosm
 	
 	for (i = 0; i < cosmo.num_ncdm; i++)
 	{
+		if (!isfinite(cosmo.m_ncdm[i]) || cosmo.m_ncdm[i] <= 0.)
+		{
+			addParameterError(params, numparam, "m_ncdm", "active non-CDM masses must be finite and greater than zero");
+			cosmo.m_ncdm[i] = 1.;
+		}
+		if (!isfinite(cosmo.T_ncdm[i]) || cosmo.T_ncdm[i] <= 0.)
+		{
+			addParameterError(params, numparam, "T_ncdm", "active non-CDM temperatures must be finite and greater than zero");
+			cosmo.T_ncdm[i] = P_T_NCDM;
+		}
+		if (!isfinite(cosmo.deg_ncdm[i]) || cosmo.deg_ncdm[i] <= 0.)
+		{
+			addParameterError(params, numparam, "deg_ncdm", "active non-CDM degeneracies must be finite and greater than zero");
+			cosmo.deg_ncdm[i] = 1.;
+		}
 		cosmo.Omega_ncdm[i] = cosmo.m_ncdm[i] * cosmo.deg_ncdm[i] / P_NCDM_MASS_OMEGA / cosmo.h / cosmo.h;
 	}
 	
@@ -1765,17 +2037,13 @@ int parseMetadata(parameter * & params, const int numparam, metadata & sim, cosm
 	
 	if (cosmo.Omega_m <= 0. || cosmo.Omega_m > 1.)
 	{
-		COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": total matter density out of range!" << endl;
-#ifdef LATFIELD2_HPP
-		parallel.abortForce();
-#endif
+		addParserDiagnostic(true, 0, "cosmological densities", NULL, "total matter density must be greater than zero and no larger than one");
+		cosmo.Omega_Lambda = 0.;
 	}
 	else if (cosmo.Omega_rad < 0. || cosmo.Omega_rad > 1. - cosmo.Omega_m)
 	{
-		COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": total radiation energy density out of range!" << endl;
-#ifdef LATFIELD2_HPP
-		parallel.abortForce();
-#endif
+		addParserDiagnostic(true, 0, "cosmological densities", NULL, "total radiation density is outside the supported range");
+		cosmo.Omega_Lambda = 0.;
 	}
 	else
 	{
@@ -1826,10 +2094,99 @@ int parseMetadata(parameter * & params, const int numparam, metadata & sim, cosm
 	}
 	for (; i < MAX_PCL_SPECIES-2; i++)
 		sim.z_switch_Bncdm[i] = sim.z_switch_Bncdm[i-1];
+
+	if (!isfinite(ic.A_s) || ic.A_s <= 0.)
+		addParameterError(params, numparam, "A_s", "must be a finite value greater than zero");
+	if (!isfinite(ic.k_pivot) || ic.k_pivot <= 0.)
+		addParameterError(params, numparam, "k_pivot", "must be a finite value greater than zero");
+	if (!isfinite(ic.n_s))
+		addParameterError(params, numparam, "n_s", "must be finite");
+	if (!isfinite(ic.z_relax) || ic.z_relax <= -1.)
+		addParameterError(params, numparam, "relaxation redshift", "must be finite and greater than -1");
+	if (findParameter(params, numparam, "restart redshift") >= 0 && (!isfinite(ic.z_ic) || ic.z_ic <= -1.))
+		addParameterError(params, numparam, "restart redshift", "must be finite and greater than -1");
+
+	for (i = 0; i < MAX_PCL_SPECIES; i++)
+	{
+		if (ic.numtile[i] < 0)
+			addParameterError(params, numparam, "tiling factor", "tiling factors must not be negative");
+		if ((double) ic.numtile[i] > cbrt((double) LONG_MAX))
+			addParameterError(params, numparam, "tiling factor", "tiling-factor cube exceeds the supported particle-count range");
+	}
+
+	for (i = 0; i < sim.num_snapshot; i++)
+		if (!isfinite(sim.z_snapshot[i]) || sim.z_snapshot[i] <= -1.)
+			addParameterError(params, numparam, "snapshot redshifts", "all redshifts must be finite and greater than -1");
+	for (i = 0; i < sim.num_pk; i++)
+		if (!isfinite(sim.z_pk[i]) || sim.z_pk[i] <= -1.)
+			addParameterError(params, numparam, "Pk redshifts", "all redshifts must be finite and greater than -1");
+	for (i = 0; i < sim.num_restart; i++)
+		if (!isfinite(sim.z_restart[i]) || sim.z_restart[i] <= -1.)
+			addParameterError(params, numparam, "hibernation redshifts", "all redshifts must be finite and greater than -1");
+	if (!isfinite(sim.z_switch_deltarad) || sim.z_switch_deltarad <= -1.)
+		addParameterError(params, numparam, "switch delta_rad", "must be finite and greater than -1");
+	if (!isfinite(sim.z_switch_linearchi) || sim.z_switch_linearchi <= -1.)
+		addParameterError(params, numparam, "switch linear chi", "must be finite and greater than -1");
+	for (i = 0; i < cosmo.num_ncdm; i++)
+	{
+		if (!isfinite(sim.z_switch_deltancdm[i]) || sim.z_switch_deltancdm[i] <= -1.)
+			addParameterError(params, numparam, "switch delta_ncdm", "all active-species redshifts must be finite and greater than -1");
+		if (!isfinite(sim.z_switch_Bncdm[i]) || sim.z_switch_Bncdm[i] <= -1.)
+			addParameterError(params, numparam, "switch B ncdm", "all active-species redshifts must be finite and greater than -1");
+	}
+
+	if (sim.num_restart > 0)
+		addParameterError(params, numparam, "hibernation redshifts", "GPU hibernation output is not implemented; continuing would falsely report a checkpoint");
+	if (sim.wallclocklimit > 0.)
+		addParameterError(params, numparam, "hibernation wallclock limit", "GPU hibernation output is not implemented; reaching this limit would stop without a checkpoint");
+
+	for (i = 0; i < sim.num_lightcone; i++)
+	{
+		if (!isfinite(sim.lightcone[i].z) || sim.lightcone[i].z <= -1.)
+			addParserDiagnostic(true, 0, "lightcone redshift", NULL, "all light-cone redshifts must be finite and greater than -1");
+		if (!isfinite(sim.lightcone[i].distance[0]) || !isfinite(sim.lightcone[i].distance[1])
+			|| sim.lightcone[i].distance[0] < 0. || sim.lightcone[i].distance[1] < 0.
+			|| sim.lightcone[i].distance[0] < sim.lightcone[i].distance[1])
+			addParserDiagnostic(true, 0, "lightcone distance", NULL, "distances must be finite, non-negative, and ordered outer-to-inner");
+		if (!isfinite(sim.pixelfactor[i]) || sim.pixelfactor[i] <= 0.)
+			addParserDiagnostic(true, 0, "lightcone pixel factor", NULL, "must be finite and greater than zero");
+		if (!isfinite(sim.shellfactor[i]) || sim.shellfactor[i] <= 0.)
+			addParserDiagnostic(true, 0, "lightcone shell factor", NULL, "must be finite and greater than zero");
+		if (!isfinite(sim.covering[i]) || sim.covering[i] <= 0.)
+			addParserDiagnostic(true, 0, "lightcone covering", NULL, "must be finite and greater than zero");
+		if (sim.Nside[i][0] < 1 || sim.Nside[i][1] < sim.Nside[i][0])
+			addParserDiagnostic(true, 0, "lightcone Nside", NULL, "values must be positive and the maximum must not be smaller than the minimum");
+	}
+
+#ifndef VELOCITY
+	if (sim.out_snapshot & MASK_VEL)
+	{
+		addParameterWarning(params, numparam, "snapshot outputs", "velocity output is unavailable without VELOCITY and will be ignored");
+		sim.out_snapshot &= ~MASK_VEL;
+	}
+	if (sim.out_pk & MASK_VEL)
+	{
+		addParameterWarning(params, numparam, "Pk outputs", "velocity output is unavailable without VELOCITY and will be ignored");
+		sim.out_pk &= ~MASK_VEL;
+	}
+#endif
+#ifndef HAVE_HEALPIX
+	for (i = 0; i < sim.num_lightcone; i++)
+	{
+		const int metric_mask = MASK_PHI | MASK_CHI | MASK_B | MASK_HIJ;
+		if (sim.out_lightcone[i] & metric_mask)
+		{
+			addParserDiagnostic(false, 0, "lightcone outputs", NULL, "metric light-cone output is unavailable without HAVE_HEALPIX and will be ignored");
+			sim.out_lightcone[i] &= ~metric_mask;
+		}
+	}
+#endif
 	
 	for (i = 0; i < numparam; i++)
 	{
 		if (params[i].used) usedparams++;
+		else
+			addParserDiagnostic(false, params[i].line, params[i].name, params[i].value, "not used by gevolution; retained for CLASS or another compatible build");
 	}
 	
 	return usedparams;

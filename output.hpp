@@ -6,7 +6,7 @@
 //
 // Author: Julian Adamek (Université de Genève & Observatoire de Paris & Queen Mary University of London & Universität Zürich & ETH Zürich)
 //
-// Last modified: April 2026
+// Last modified: June 2026
 //
 //////////////////////////
 
@@ -21,6 +21,7 @@
 #include <stdexcept>
 #include <stdint.h>
 #include <nvtx3/nvToolsExt.h>
+#include "cuda_aware_mpi.hpp"
 #include "lightcone_device_workspace.hpp"
 
 using namespace std;
@@ -1004,6 +1005,55 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 	long * IDcombuf4 = NULL;
 	long * IDprelog_device[9];
 	LightconeDeviceWorkspace * IDprelog_workspace = NULL;
+	const bool cuda_aware_mpi_active = gevolution_cuda_aware_mpi_active();
+	auto send_id_dim0 = [&](long * device_buffer, int count, int destination)
+	{
+		if (cuda_aware_mpi_active)
+		{
+			parallel.send_dim0<long>(device_buffer, count, destination);
+			return;
+		}
+
+		vector<long> host_buffer(count);
+		cudaMemcpy(host_buffer.data(), device_buffer, sizeof(long) * count, cudaMemcpyDeviceToHost);
+		parallel.send_dim0<long>(host_buffer.data(), count, destination);
+	};
+	auto send_id_dim1 = [&](long * device_buffer, int count, int destination)
+	{
+		if (cuda_aware_mpi_active)
+		{
+			parallel.send_dim1<long>(device_buffer, count, destination);
+			return;
+		}
+
+		vector<long> host_buffer(count);
+		cudaMemcpy(host_buffer.data(), device_buffer, sizeof(long) * count, cudaMemcpyDeviceToHost);
+		parallel.send_dim1<long>(host_buffer.data(), count, destination);
+	};
+	auto receive_id_dim0 = [&](long * device_buffer, int count, int source)
+	{
+		if (cuda_aware_mpi_active)
+		{
+			parallel.receive_dim0<long>(device_buffer, count, source);
+			return;
+		}
+
+		vector<long> host_buffer(count);
+		parallel.receive_dim0<long>(host_buffer.data(), count, source);
+		cudaMemcpy(device_buffer, host_buffer.data(), sizeof(long) * count, cudaMemcpyHostToDevice);
+	};
+	auto receive_id_dim1 = [&](long * device_buffer, int count, int source)
+	{
+		if (cuda_aware_mpi_active)
+		{
+			parallel.receive_dim1<long>(device_buffer, count, source);
+			return;
+		}
+
+		vector<long> host_buffer(count);
+		parallel.receive_dim1<long>(host_buffer.data(), count, source);
+		cudaMemcpy(device_buffer, host_buffer.data(), sizeof(long) * count, cudaMemcpyHostToDevice);
+	};
 	Site xsim;
 #ifdef HAVE_HEALPIX
 	int done_B = 0;
@@ -1028,6 +1078,54 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 	MPI_File mapfile;
 	MPI_Status status;
 	int io_group_size;
+	auto send_pixel_dim0 = [&](Real * device_buffer, int count, int destination)
+	{
+		if (cuda_aware_mpi_active)
+		{
+			parallel.send_dim0<Real>(device_buffer, count, destination);
+			return;
+		}
+
+		vector<Real> host_buffer(count);
+		cudaMemcpy(host_buffer.data(), device_buffer, sizeof(Real) * count, cudaMemcpyDeviceToHost);
+		parallel.send_dim0<Real>(host_buffer.data(), count, destination);
+	};
+	auto send_pixel_dim1 = [&](Real * device_buffer, int count, int destination)
+	{
+		if (cuda_aware_mpi_active)
+		{
+			parallel.send_dim1<Real>(device_buffer, count, destination);
+			return;
+		}
+
+		vector<Real> host_buffer(count);
+		cudaMemcpy(host_buffer.data(), device_buffer, sizeof(Real) * count, cudaMemcpyDeviceToHost);
+		parallel.send_dim1<Real>(host_buffer.data(), count, destination);
+	};
+	auto receive_pixel_dim0 = [&](Real * device_buffer, int count, int source)
+	{
+		if (cuda_aware_mpi_active)
+		{
+			parallel.receive_dim0<Real>(device_buffer, count, source);
+			return;
+		}
+
+		vector<Real> host_buffer(count);
+		parallel.receive_dim0<Real>(host_buffer.data(), count, source);
+		cudaMemcpy(device_buffer, host_buffer.data(), sizeof(Real) * count, cudaMemcpyHostToDevice);
+	};
+	auto receive_pixel_dim1 = [&](Real * device_buffer, int count, int source)
+	{
+		if (cuda_aware_mpi_active)
+		{
+			parallel.receive_dim1<Real>(device_buffer, count, source);
+			return;
+		}
+
+		vector<Real> host_buffer(count);
+		parallel.receive_dim1<Real>(host_buffer.data(), count, source);
+		cudaMemcpy(device_buffer, host_buffer.data(), sizeof(Real) * count, cudaMemcpyHostToDevice);
+	};
 
 	for (j = 0; j < 9*LIGHTCONE_MAX_FIELDS; j++)
 		pixbuf[j/9][j%9] = NULL;
@@ -1569,12 +1667,12 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 								{
 									healpix_sync_if(commbuf_accumulation_pending, edge_pixbuf_accumulation_pending, "pixel buffer accumulation");
 									healpix_pack3(commbuf, pixbuf[j][0], pixbuf_size[0], pixbuf[j][1], pixbuf_size[1], pixbuf[j][2], pixbuf_size[2]);
-									parallel.send_dim0<Real>(commbuf, pixbuf_size[0]+pixbuf_size[1]+pixbuf_size[2], (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
+									send_pixel_dim0(commbuf, pixbuf_size[0]+pixbuf_size[1]+pixbuf_size[2], (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
 								}
 								if (pixbuf_size[3]+pixbuf_size[4]+pixbuf_size[5] > 0)
 								{
 									healpix_sync_if(commbuf_accumulation_pending, edge_pixbuf_accumulation_pending, "pixel buffer accumulation");
-									parallel.receive_dim0<Real>(commbuf, pixbuf_size[3]+pixbuf_size[4]+pixbuf_size[5], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
+									receive_pixel_dim0(commbuf, pixbuf_size[3]+pixbuf_size[4]+pixbuf_size[5], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
 									healpix_add_packed3(pixbuf[j][3], pixbuf_size[3], pixbuf[j][4], pixbuf_size[4], pixbuf[j][5], pixbuf_size[5], commbuf);
 									commbuf_accumulation_pending = true;
 									edge_pixbuf_accumulation_pending = true;
@@ -1585,7 +1683,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 								if (pixbuf_size[3]+pixbuf_size[4]+pixbuf_size[5] > 0 && parallel.grid_size()[0] > 2)
 								{
 									healpix_sync_if(commbuf_accumulation_pending, edge_pixbuf_accumulation_pending, "pixel buffer accumulation");
-									parallel.receive_dim0<Real>(commbuf, pixbuf_size[3]+pixbuf_size[4]+pixbuf_size[5], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
+									receive_pixel_dim0(commbuf, pixbuf_size[3]+pixbuf_size[4]+pixbuf_size[5], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
 									healpix_add_packed3(pixbuf[j][3], pixbuf_size[3], pixbuf[j][4], pixbuf_size[4], pixbuf[j][5], pixbuf_size[5], commbuf);
 									commbuf_accumulation_pending = true;
 									edge_pixbuf_accumulation_pending = true;
@@ -1594,7 +1692,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 								{
 									healpix_sync_if(commbuf_accumulation_pending, edge_pixbuf_accumulation_pending, "pixel buffer accumulation");
 									healpix_pack3(commbuf, pixbuf[j][0], pixbuf_size[0], pixbuf[j][1], pixbuf_size[1], pixbuf[j][2], pixbuf_size[2]);
-									parallel.send_dim0<Real>(commbuf, pixbuf_size[0]+pixbuf_size[1]+pixbuf_size[2], (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
+									send_pixel_dim0(commbuf, pixbuf_size[0]+pixbuf_size[1]+pixbuf_size[2], (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
 								}
 							}
 
@@ -1604,12 +1702,12 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 								{
 									healpix_sync_if(commbuf_accumulation_pending, edge_pixbuf_accumulation_pending, "pixel buffer accumulation");
 									healpix_pack3(commbuf, pixbuf[j][6], pixbuf_size[6], pixbuf[j][7], pixbuf_size[7], pixbuf[j][8], pixbuf_size[8]);
-									parallel.send_dim0<Real>(commbuf, pixbuf_size[6]+pixbuf_size[7]+pixbuf_size[8], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
+									send_pixel_dim0(commbuf, pixbuf_size[6]+pixbuf_size[7]+pixbuf_size[8], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
 								}
 								if (pixbuf_size[3]+pixbuf_size[4]+pixbuf_size[5] > 0 && parallel.grid_size()[0] > 2)
 								{
 									healpix_sync_if(commbuf_accumulation_pending, edge_pixbuf_accumulation_pending, "pixel buffer accumulation");
-									parallel.receive_dim0<Real>(commbuf, pixbuf_size[3]+pixbuf_size[4]+pixbuf_size[5], (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
+									receive_pixel_dim0(commbuf, pixbuf_size[3]+pixbuf_size[4]+pixbuf_size[5], (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
 									healpix_add_packed3(pixbuf[j][3], pixbuf_size[3], pixbuf[j][4], pixbuf_size[4], pixbuf[j][5], pixbuf_size[5], commbuf);
 									commbuf_accumulation_pending = true;
 									edge_pixbuf_accumulation_pending = true;
@@ -1620,7 +1718,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 								if (pixbuf_size[3]+pixbuf_size[4]+pixbuf_size[5] > 0)
 								{
 									healpix_sync_if(commbuf_accumulation_pending, edge_pixbuf_accumulation_pending, "pixel buffer accumulation");
-									parallel.receive_dim0<Real>(commbuf, pixbuf_size[3]+pixbuf_size[4]+pixbuf_size[5], (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
+									receive_pixel_dim0(commbuf, pixbuf_size[3]+pixbuf_size[4]+pixbuf_size[5], (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
 									healpix_add_packed3(pixbuf[j][3], pixbuf_size[3], pixbuf[j][4], pixbuf_size[4], pixbuf[j][5], pixbuf_size[5], commbuf);
 									commbuf_accumulation_pending = true;
 									edge_pixbuf_accumulation_pending = true;
@@ -1629,7 +1727,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 								{
 									healpix_sync_if(commbuf_accumulation_pending, edge_pixbuf_accumulation_pending, "pixel buffer accumulation");
 									healpix_pack3(commbuf, pixbuf[j][6], pixbuf_size[6], pixbuf[j][7], pixbuf_size[7], pixbuf[j][8], pixbuf_size[8]);
-									parallel.send_dim0<Real>(commbuf, pixbuf_size[6]+pixbuf_size[7]+pixbuf_size[8], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
+									send_pixel_dim0(commbuf, pixbuf_size[6]+pixbuf_size[7]+pixbuf_size[8], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
 								}
 							}
 
@@ -1638,12 +1736,12 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 								if (pixbuf_size[3] > 0)
 								{
 									healpix_sync_if(edge_pixbuf_accumulation_pending, commbuf_accumulation_pending, "pixel buffer accumulation");
-									parallel.send_dim1<Real>(pixbuf[j][3], pixbuf_size[3], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
+									send_pixel_dim1(pixbuf[j][3], pixbuf_size[3], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
 								}
 								if (pixbuf_size[4] > 0)
 								{
 									healpix_sync_if(commbuf_accumulation_pending, edge_pixbuf_accumulation_pending, "pixel buffer accumulation");
-									parallel.receive_dim1<Real>(commbuf, pixbuf_size[4], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
+									receive_pixel_dim1(commbuf, pixbuf_size[4], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
 									healpix_add(pixbuf[j][4], commbuf, pixbuf_size[4]);
 									commbuf_accumulation_pending = true;
 								}
@@ -1653,14 +1751,14 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 								if (pixbuf_size[4] > 0 && parallel.grid_size()[1] > 2)
 								{
 									healpix_sync_if(commbuf_accumulation_pending, edge_pixbuf_accumulation_pending, "pixel buffer accumulation");
-									parallel.receive_dim1<Real>(commbuf, pixbuf_size[4], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
+									receive_pixel_dim1(commbuf, pixbuf_size[4], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
 									healpix_add(pixbuf[j][4], commbuf, pixbuf_size[4]);
 									commbuf_accumulation_pending = true;
 								}
 								if (pixbuf_size[3] > 0)
 								{
 									healpix_sync_if(edge_pixbuf_accumulation_pending, commbuf_accumulation_pending, "pixel buffer accumulation");
-									parallel.send_dim1<Real>(pixbuf[j][3], pixbuf_size[3], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
+									send_pixel_dim1(pixbuf[j][3], pixbuf_size[3], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
 								}
 							}
 
@@ -1669,12 +1767,12 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 								if (pixbuf_size[5] > 0)
 								{
 									healpix_sync_if(edge_pixbuf_accumulation_pending, commbuf_accumulation_pending, "pixel buffer accumulation");
-									parallel.send_dim1<Real>(pixbuf[j][5], pixbuf_size[5], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
+									send_pixel_dim1(pixbuf[j][5], pixbuf_size[5], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
 								}
 								if (pixbuf_size[4] > 0 && parallel.grid_size()[1] > 2)
 								{
 									healpix_sync_if(commbuf_accumulation_pending, edge_pixbuf_accumulation_pending, "pixel buffer accumulation");
-									parallel.receive_dim1<Real>(commbuf, pixbuf_size[4], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
+									receive_pixel_dim1(commbuf, pixbuf_size[4], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
 									healpix_add(pixbuf[j][4], commbuf, pixbuf_size[4]);
 									commbuf_accumulation_pending = true;
 								}
@@ -1684,14 +1782,14 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 								if (pixbuf_size[4] > 0)
 								{
 									healpix_sync_if(commbuf_accumulation_pending, edge_pixbuf_accumulation_pending, "pixel buffer accumulation");
-									parallel.receive_dim1<Real>(commbuf, pixbuf_size[4], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
+									receive_pixel_dim1(commbuf, pixbuf_size[4], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
 									healpix_add(pixbuf[j][4], commbuf, pixbuf_size[4]);
 									commbuf_accumulation_pending = true;
 								}
 								if (pixbuf_size[5] > 0)
 								{
 									healpix_sync_if(edge_pixbuf_accumulation_pending, commbuf_accumulation_pending, "pixel buffer accumulation");
-									parallel.send_dim1<Real>(pixbuf[j][5], pixbuf_size[5], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
+									send_pixel_dim1(pixbuf[j][5], pixbuf_size[5], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
 								}
 							}
 						}
@@ -1718,6 +1816,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 					vector<Real *> sendbuf(parallel.size(), NULL);
 					vector<Real *> recvbuf(parallel.size(), NULL);
 					vector<MPI_Request> requests;
+					vector<Real> host_send_workspace;
 					Real * send_workspace = NULL;
 					bool send_workspace_private = false;
 					int64_t total_send_count = 0;
@@ -1799,24 +1898,32 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 
 					if (total_send_count > 0)
 					{
-						size_t required_send_bytes = total_send_count * sizeof(Real);
-#ifdef FFT3D
-						if (LATfield2::tempMemory.deviceWorkspace() != NULL && LATfield2::tempMemory.deviceWorkspaceBytes() >= required_send_bytes)
-							send_workspace = (Real *) LATfield2::tempMemory.deviceWorkspace();
-						else
-#endif
+						if (!cuda_aware_mpi_active)
 						{
-							if (!healpix_send_workspace_fallback_warning)
-							{
+							host_send_workspace.resize(total_send_count);
+							send_workspace = host_send_workspace.data();
+						}
+						else
+						{
+							size_t required_send_bytes = total_send_count * sizeof(Real);
 #ifdef FFT3D
-								cout << COLORTEXT_YELLOW << " /!\\ warning" << COLORTEXT_RESET << ": proc#" << parallel.rank() << " HEALPix output send staging exceeds LATfield2 shared device workspace (" << required_send_bytes << " bytes required, " << LATfield2::tempMemory.deviceWorkspaceBytes() << " bytes available); using private device allocation." << endl;
-#else
-								cout << COLORTEXT_YELLOW << " /!\\ warning" << COLORTEXT_RESET << ": proc#" << parallel.rank() << " HEALPix output send staging cannot use LATfield2 shared device workspace without FFT3D; using private device allocation." << endl;
+							if (LATfield2::tempMemory.deviceWorkspace() != NULL && LATfield2::tempMemory.deviceWorkspaceBytes() >= required_send_bytes)
+								send_workspace = (Real *) LATfield2::tempMemory.deviceWorkspace();
+							else
 #endif
-								healpix_send_workspace_fallback_warning = true;
+							{
+								if (!healpix_send_workspace_fallback_warning)
+								{
+#ifdef FFT3D
+									cout << COLORTEXT_YELLOW << " /!\\ warning" << COLORTEXT_RESET << ": proc#" << parallel.rank() << " HEALPix output send staging exceeds LATfield2 shared device workspace (" << required_send_bytes << " bytes required, " << LATfield2::tempMemory.deviceWorkspaceBytes() << " bytes available); using private device allocation." << endl;
+#else
+									cout << COLORTEXT_YELLOW << " /!\\ warning" << COLORTEXT_RESET << ": proc#" << parallel.rank() << " HEALPix output send staging cannot use LATfield2 shared device workspace without FFT3D; using private device allocation." << endl;
+#endif
+									healpix_send_workspace_fallback_warning = true;
+								}
+								healpix_cuda_malloc(&send_workspace, total_send_count);
+								send_workspace_private = true;
 							}
-							healpix_cuda_malloc(&send_workspace, total_send_count);
-							send_workspace_private = true;
 						}
 					}
 
@@ -1830,7 +1937,8 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 							int64_t send_offset = 0;
 							for (int sidx = 0; sidx < (int) send_segments[dest].size(); sidx++)
 							{
-								healpix_cuda_check(cudaMemcpy((void *) (sendbuf[dest] + send_offset), (void *) (pixbuf[j][4] + send_segments[dest][sidx].pixbuf_offset), send_segments[dest][sidx].count * sizeof(Real), cudaMemcpyDeviceToDevice), "write buffer pack");
+								cudaMemcpyKind copy_kind = cuda_aware_mpi_active ? cudaMemcpyDeviceToDevice : cudaMemcpyDeviceToHost;
+								healpix_cuda_check(cudaMemcpy((void *) (sendbuf[dest] + send_offset), (void *) (pixbuf[j][4] + send_segments[dest][sidx].pixbuf_offset), send_segments[dest][sidx].count * sizeof(Real), copy_kind), "write buffer pack");
 								send_offset += send_segments[dest][sidx].count;
 							}
 							requests.push_back(MPI_Request());
@@ -2063,20 +2171,20 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 					parallel.send_dim1<int>(IDlog_sizes_send1, 3, (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
 
 					if (IDlog_sizes[2] > 0)
-						parallel.send_dim1<long>(IDprelog_device[2], IDlog_sizes[2], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
+						send_id_dim1(IDprelog_device[2], IDlog_sizes[2], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
 
 					if (IDlog_sizes[5] > 0)
-						parallel.send_dim1<long>(IDprelog_device[5], IDlog_sizes[5], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
+						send_id_dim1(IDprelog_device[5], IDlog_sizes[5], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
 
 					if (IDlog_sizes[8] > 0)
-						parallel.send_dim1<long>(IDprelog_device[8], IDlog_sizes[8], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
+						send_id_dim1(IDprelog_device[8], IDlog_sizes[8], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
 				}
 				else
 				{
 					parallel.send_dim1<int>(n, (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
 
 					if (n > 0)
-						parallel.send_dim1<long>(IDprelog_device[0], n, (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
+						send_id_dim1(IDprelog_device[0], n, (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
 				}
 			}
 
@@ -2091,13 +2199,13 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 						cudaMalloc((void **) &IDcombuf1, (IDlog_sizes_recv1[0] + IDlog_sizes_recv1[1] + IDlog_sizes_recv1[2]) * sizeof(long));
 
 						if (IDlog_sizes_recv1[0] > 0)
-							parallel.receive_dim1<long>(IDcombuf1, IDlog_sizes_recv1[0], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
+							receive_id_dim1(IDcombuf1, IDlog_sizes_recv1[0], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
 
 						if (IDlog_sizes_recv1[1] > 0)
-							parallel.receive_dim1<long>(IDcombuf1+IDlog_sizes_recv1[0], IDlog_sizes_recv1[1], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
+							receive_id_dim1(IDcombuf1+IDlog_sizes_recv1[0], IDlog_sizes_recv1[1], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
 
 						if (IDlog_sizes_recv1[2] > 0)
-							parallel.receive_dim1<long>(IDcombuf1+IDlog_sizes_recv1[0]+IDlog_sizes_recv1[1], IDlog_sizes_recv1[2], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
+							receive_id_dim1(IDcombuf1+IDlog_sizes_recv1[0]+IDlog_sizes_recv1[1], IDlog_sizes_recv1[2], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
 					}
 				}
 				else
@@ -2108,7 +2216,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 					{
 						cudaMalloc((void **) &IDcombuf1, j * sizeof(long));
 
-						parallel.receive_dim1<long>(IDcombuf1, j, (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
+						receive_id_dim1(IDcombuf1, j, (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
 					}
 				}
 			}
@@ -2125,20 +2233,20 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 					parallel.send_dim1<int>(IDlog_sizes_send1, 3, parallel.grid_rank()[1]-1);
 
 					if (IDlog_sizes[0] > 0)
-						parallel.send_dim1<long>(IDprelog_device[0], IDlog_sizes[0], parallel.grid_rank()[1]-1);
+						send_id_dim1(IDprelog_device[0], IDlog_sizes[0], parallel.grid_rank()[1]-1);
 
 					if (IDlog_sizes[3] > 0)
-						parallel.send_dim1<long>(IDprelog_device[3], IDlog_sizes[3], parallel.grid_rank()[1]-1);
+						send_id_dim1(IDprelog_device[3], IDlog_sizes[3], parallel.grid_rank()[1]-1);
 
 					if (IDlog_sizes[6] > 0)
-						parallel.send_dim1<long>(IDprelog_device[6], IDlog_sizes[6], parallel.grid_rank()[1]-1);
+						send_id_dim1(IDprelog_device[6], IDlog_sizes[6], parallel.grid_rank()[1]-1);
 				}
 				else
 				{
 					parallel.send_dim1<int>(n, parallel.grid_rank()[1]-1);
 
 					if (n > 0)
-						parallel.send_dim1<long>(IDprelog_device[0], n, parallel.grid_rank()[1]-1);
+						send_id_dim1(IDprelog_device[0], n, parallel.grid_rank()[1]-1);
 				}
 			}
 			else
@@ -2152,13 +2260,13 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 						cudaMalloc((void **) &IDcombuf2, (IDlog_sizes_recv1[3] + IDlog_sizes_recv1[4] + IDlog_sizes_recv1[5]) * sizeof(long));
 
 						if (IDlog_sizes_recv1[3] > 0)
-							parallel.receive_dim1<long>(IDcombuf2, IDlog_sizes_recv1[3], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
+							receive_id_dim1(IDcombuf2, IDlog_sizes_recv1[3], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
 
 						if (IDlog_sizes_recv1[4] > 0)
-							parallel.receive_dim1<long>(IDcombuf2+IDlog_sizes_recv1[3], IDlog_sizes_recv1[4], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
+							receive_id_dim1(IDcombuf2+IDlog_sizes_recv1[3], IDlog_sizes_recv1[4], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
 
 						if (IDlog_sizes_recv1[5] > 0)
-							parallel.receive_dim1<long>(IDcombuf2+IDlog_sizes_recv1[3]+IDlog_sizes_recv1[4], IDlog_sizes_recv1[5], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
+							receive_id_dim1(IDcombuf2+IDlog_sizes_recv1[3]+IDlog_sizes_recv1[4], IDlog_sizes_recv1[5], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
 					}
 				}
 				else
@@ -2169,7 +2277,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 					{
 						cudaMalloc((void **) &IDcombuf2, i * sizeof(long));
 
-						parallel.receive_dim1<long>(IDcombuf2, i, (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
+						receive_id_dim1(IDcombuf2, i, (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
 					}
 				}
 			}
@@ -2186,20 +2294,20 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 					parallel.send_dim1<int>(IDlog_sizes_send1, 3, (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
 
 					if (IDlog_sizes[0] > 0)
-						parallel.send_dim1<long>(IDprelog_device[0], IDlog_sizes[0], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
+						send_id_dim1(IDprelog_device[0], IDlog_sizes[0], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
 
 					if (IDlog_sizes[3] > 0)
-						parallel.send_dim1<long>(IDprelog_device[3], IDlog_sizes[3], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
+						send_id_dim1(IDprelog_device[3], IDlog_sizes[3], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
 
 					if (IDlog_sizes[6] > 0)
-						parallel.send_dim1<long>(IDprelog_device[6], IDlog_sizes[6], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
+						send_id_dim1(IDprelog_device[6], IDlog_sizes[6], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
 				}
 				else
 				{
 					parallel.send_dim1<int>(n, (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
 
 					if (n > 0)
-						parallel.send_dim1<long>(IDprelog_device[0], n, (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
+						send_id_dim1(IDprelog_device[0], n, (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
 				}
 			}
 			else
@@ -2213,13 +2321,13 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 						cudaMalloc((void **) &IDcombuf2, (IDlog_sizes_recv1[3] + IDlog_sizes_recv1[4] + IDlog_sizes_recv1[5]) * sizeof(long));
 
 						if (IDlog_sizes_recv1[3] > 0)
-							parallel.receive_dim1<long>(IDcombuf2, IDlog_sizes_recv1[3], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
+							receive_id_dim1(IDcombuf2, IDlog_sizes_recv1[3], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
 
 						if (IDlog_sizes_recv1[4] > 0)
-							parallel.receive_dim1<long>(IDcombuf2+IDlog_sizes_recv1[3], IDlog_sizes_recv1[4], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
+							receive_id_dim1(IDcombuf2+IDlog_sizes_recv1[3], IDlog_sizes_recv1[4], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
 
 						if (IDlog_sizes_recv1[5] > 0)
-							parallel.receive_dim1<long>(IDcombuf2+IDlog_sizes_recv1[3]+IDlog_sizes_recv1[4], IDlog_sizes_recv1[5], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
+							receive_id_dim1(IDcombuf2+IDlog_sizes_recv1[3]+IDlog_sizes_recv1[4], IDlog_sizes_recv1[5], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
 					}
 				}
 				else
@@ -2230,7 +2338,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 					{
 						cudaMalloc((void **) &IDcombuf2, i * sizeof(long));
 
-						parallel.receive_dim1<long>(IDcombuf2, i, (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
+						receive_id_dim1(IDcombuf2, i, (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
 					}
 				}
 			}
@@ -2247,20 +2355,20 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 					parallel.send_dim1<int>(IDlog_sizes_send1, 3, (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
 
 					if (IDlog_sizes[2] > 0)
-						parallel.send_dim1<long>(IDprelog_device[2], IDlog_sizes[2], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
+						send_id_dim1(IDprelog_device[2], IDlog_sizes[2], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
 
 					if (IDlog_sizes[5] > 0)
-						parallel.send_dim1<long>(IDprelog_device[5], IDlog_sizes[5], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
+						send_id_dim1(IDprelog_device[5], IDlog_sizes[5], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
 
 					if (IDlog_sizes[8] > 0)
-						parallel.send_dim1<long>(IDprelog_device[8], IDlog_sizes[8], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
+						send_id_dim1(IDprelog_device[8], IDlog_sizes[8], (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
 				}
 				else
 				{
 					parallel.send_dim1<int>(n, (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
 
 					if (n > 0)
-						parallel.send_dim1<long>(IDprelog_device[0], n, (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
+						send_id_dim1(IDprelog_device[0], n, (parallel.grid_rank()[1]+1) % parallel.grid_size()[1]);
 				}
 			}
 			else if (parallel.grid_rank()[1] > 0 || parallel.grid_size()[1] % 2 == 0)
@@ -2274,13 +2382,13 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 						cudaMalloc((void **) &IDcombuf1, (IDlog_sizes_recv1[0] + IDlog_sizes_recv1[1] + IDlog_sizes_recv1[2]) * sizeof(long));
 
 						if (IDlog_sizes_recv1[0] > 0)
-							parallel.receive_dim1<long>(IDcombuf1, IDlog_sizes_recv1[0], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
+							receive_id_dim1(IDcombuf1, IDlog_sizes_recv1[0], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
 
 						if (IDlog_sizes_recv1[1] > 0)
-							parallel.receive_dim1<long>(IDcombuf1+IDlog_sizes_recv1[0], IDlog_sizes_recv1[1], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
+							receive_id_dim1(IDcombuf1+IDlog_sizes_recv1[0], IDlog_sizes_recv1[1], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
 
 						if (IDlog_sizes_recv1[2] > 0)
-							parallel.receive_dim1<long>(IDcombuf1+IDlog_sizes_recv1[0]+IDlog_sizes_recv1[1], IDlog_sizes_recv1[2], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
+							receive_id_dim1(IDcombuf1+IDlog_sizes_recv1[0]+IDlog_sizes_recv1[1], IDlog_sizes_recv1[2], (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
 					}
 				}
 				else
@@ -2291,7 +2399,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 					{
 						cudaMalloc((void **) &IDcombuf1, j * sizeof(long));
 
-						parallel.receive_dim1<long>(IDcombuf1, j, (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
+						receive_id_dim1(IDcombuf1, j, (parallel.grid_size()[1]+parallel.grid_rank()[1]-1) % parallel.grid_size()[1]);
 					}
 				}
 			}
@@ -2314,14 +2422,14 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 					for (int q = 6; q < 9; q++)
 					{
 						if (IDlog_sizes[q] > 0)
-							parallel.send_dim0<long>(IDprelog_device[q], IDlog_sizes[q], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
+							send_id_dim0(IDprelog_device[q], IDlog_sizes[q], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
 					}
 
 					if (IDlog_sizes_recv1[2] > 0)
-						parallel.send_dim0<long>(IDcombuf1+IDlog_sizes_recv1[0]+IDlog_sizes_recv1[1], IDlog_sizes_recv1[2], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
+						send_id_dim0(IDcombuf1+IDlog_sizes_recv1[0]+IDlog_sizes_recv1[1], IDlog_sizes_recv1[2], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
 
 					if (IDlog_sizes_recv1[5] > 0)
-						parallel.send_dim0<long>(IDcombuf2+IDlog_sizes_recv1[3]+IDlog_sizes_recv1[4], IDlog_sizes_recv1[5], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
+						send_id_dim0(IDcombuf2+IDlog_sizes_recv1[3]+IDlog_sizes_recv1[4], IDlog_sizes_recv1[5], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
 				}
 				else
 				{
@@ -2332,13 +2440,13 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 					parallel.send_dim0<int>(IDlog_sizes_send0, 3, (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
 
 					if (n > 0)
-						parallel.send_dim0<long>(IDprelog_device[0], n, (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
+						send_id_dim0(IDprelog_device[0], n, (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
 
 					if (j > 0)
-						parallel.send_dim0<long>(IDcombuf1, j, (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
+						send_id_dim0(IDcombuf1, j, (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
 
 					if (i > 0)
-						parallel.send_dim0<long>(IDcombuf2, i, (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
+						send_id_dim0(IDcombuf2, i, (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
 				}
 			}
 
@@ -2358,7 +2466,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 						{
 							if (IDlog_sizes_recv0[q] > 0)
 							{
-								parallel.receive_dim0<long>(IDcombuf, IDlog_sizes_recv0[q], (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
+								receive_id_dim0(IDcombuf, IDlog_sizes_recv0[q], (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
 								IDcombuf += IDlog_sizes_recv0[q];
 							}
 						}
@@ -2378,7 +2486,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 						{
 							if (IDlog_sizes_recv0[q] > 0)
 							{
-								parallel.receive_dim0<long>(IDcombuf, IDlog_sizes_recv0[q], (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
+								receive_id_dim0(IDcombuf, IDlog_sizes_recv0[q], (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
 								IDcombuf += IDlog_sizes_recv0[q];
 							}
 						}
@@ -2402,14 +2510,14 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 					for(int q = 0; q < 3; q++)
 					{
 						if (IDlog_sizes[q] > 0)
-							parallel.send_dim0<long>(IDprelog_device[q], IDlog_sizes[q], parallel.grid_rank()[0]-1);
+							send_id_dim0(IDprelog_device[q], IDlog_sizes[q], parallel.grid_rank()[0]-1);
 					}
 
 					if (IDlog_sizes_recv1[0] > 0)
-						parallel.send_dim0<long>(IDcombuf1, IDlog_sizes_recv1[0], parallel.grid_rank()[0]-1);
+						send_id_dim0(IDcombuf1, IDlog_sizes_recv1[0], parallel.grid_rank()[0]-1);
 
 					if (IDlog_sizes_recv1[3] > 0)
-						parallel.send_dim0<long>(IDcombuf2, IDlog_sizes_recv1[3], parallel.grid_rank()[0]-1);
+						send_id_dim0(IDcombuf2, IDlog_sizes_recv1[3], parallel.grid_rank()[0]-1);
 				}
 				else
 				{
@@ -2420,13 +2528,13 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 					parallel.send_dim0<int>(IDlog_sizes_send0, 3, parallel.grid_rank()[0]-1);
 
 					if (n > 0)
-						parallel.send_dim0<long>(IDprelog_device[0], n, parallel.grid_rank()[0]-1);
+						send_id_dim0(IDprelog_device[0], n, parallel.grid_rank()[0]-1);
 
 					if (j > 0)
-						parallel.send_dim0<long>(IDcombuf1, j, parallel.grid_rank()[0]-1);
+						send_id_dim0(IDcombuf1, j, parallel.grid_rank()[0]-1);
 
 					if (i > 0)
-						parallel.send_dim0<long>(IDcombuf2, i, parallel.grid_rank()[0]-1);
+						send_id_dim0(IDcombuf2, i, parallel.grid_rank()[0]-1);
 				}
 			}
 			else
@@ -2445,7 +2553,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 						{
 							if (IDlog_sizes_recv0[q] > 0)
 							{
-								parallel.receive_dim0<long>(IDcombuf, IDlog_sizes_recv0[q], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
+								receive_id_dim0(IDcombuf, IDlog_sizes_recv0[q], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
 								IDcombuf += IDlog_sizes_recv0[q];
 							}
 						}
@@ -2465,7 +2573,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 						{
 							if (IDlog_sizes_recv0[q] > 0)
 							{
-								parallel.receive_dim0<long>(IDcombuf, IDlog_sizes_recv0[q], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
+								receive_id_dim0(IDcombuf, IDlog_sizes_recv0[q], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
 								IDcombuf += IDlog_sizes_recv0[q];
 							}
 						}
@@ -2489,14 +2597,14 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 					for (int q = 0; q < 3; q++)
 					{
 						if (IDlog_sizes[q] > 0)
-							parallel.send_dim0<long>(IDprelog_device[q], IDlog_sizes[q], (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
+							send_id_dim0(IDprelog_device[q], IDlog_sizes[q], (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
 					}
 
 					if (IDlog_sizes_recv1[0] > 0)
-						parallel.send_dim0<long>(IDcombuf1, IDlog_sizes_recv1[0], (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
+						send_id_dim0(IDcombuf1, IDlog_sizes_recv1[0], (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
 
 					if (IDlog_sizes_recv1[3] > 0)
-						parallel.send_dim0<long>(IDcombuf2, IDlog_sizes_recv1[3], (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
+						send_id_dim0(IDcombuf2, IDlog_sizes_recv1[3], (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
 				}
 				else
 				{
@@ -2507,13 +2615,13 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 					parallel.send_dim0<int>(IDlog_sizes_send0, 3, (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
 
 					if (n > 0)
-						parallel.send_dim0<long>(IDprelog_device[0], n, (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
+						send_id_dim0(IDprelog_device[0], n, (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
 
 					if (j > 0)
-						parallel.send_dim0<long>(IDcombuf1, j, (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
+						send_id_dim0(IDcombuf1, j, (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
 
 					if (i > 0)
-						parallel.send_dim0<long>(IDcombuf2, i, (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
+						send_id_dim0(IDcombuf2, i, (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
 				}
 			}
 			else
@@ -2532,7 +2640,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 						{
 							if (IDlog_sizes_recv0[q] > 0)
 							{
-								parallel.receive_dim0<long>(IDcombuf, IDlog_sizes_recv0[q], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
+								receive_id_dim0(IDcombuf, IDlog_sizes_recv0[q], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
 								IDcombuf += IDlog_sizes_recv0[q];
 							}
 						}
@@ -2552,7 +2660,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 						{
 							if (IDlog_sizes_recv0[q] > 0)
 							{
-								parallel.receive_dim0<long>(IDcombuf, IDlog_sizes_recv0[q], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
+								receive_id_dim0(IDcombuf, IDlog_sizes_recv0[q], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
 								IDcombuf += IDlog_sizes_recv0[q];
 							}
 						}
@@ -2576,14 +2684,14 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 					for (int q = 6; q < 9; q++)
 					{
 						if (IDlog_sizes[q] > 0)
-							parallel.send_dim0<long>(IDprelog_device[q], IDlog_sizes[q], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
+							send_id_dim0(IDprelog_device[q], IDlog_sizes[q], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
 					}
 
 					if (IDlog_sizes_recv1[2] > 0)
-						parallel.send_dim0<long>(IDcombuf1+IDlog_sizes_recv1[0]+IDlog_sizes_recv1[1], IDlog_sizes_recv1[2], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
+						send_id_dim0(IDcombuf1+IDlog_sizes_recv1[0]+IDlog_sizes_recv1[1], IDlog_sizes_recv1[2], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
 
 					if (IDlog_sizes_recv1[5] > 0)
-						parallel.send_dim0<long>(IDcombuf2+IDlog_sizes_recv1[3]+IDlog_sizes_recv1[4], IDlog_sizes_recv1[5], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
+						send_id_dim0(IDcombuf2+IDlog_sizes_recv1[3]+IDlog_sizes_recv1[4], IDlog_sizes_recv1[5], (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
 				}
 				else
 				{
@@ -2594,13 +2702,13 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 					parallel.send_dim0<int>(IDlog_sizes_send0, 3, (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
 
 					if (n > 0)
-						parallel.send_dim0<long>(IDprelog_device[0], n, (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
+						send_id_dim0(IDprelog_device[0], n, (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
 
 					if (j > 0)
-						parallel.send_dim0<long>(IDcombuf1, j, (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
+						send_id_dim0(IDcombuf1, j, (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
 
 					if (i > 0)
-						parallel.send_dim0<long>(IDcombuf2, i, (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
+						send_id_dim0(IDcombuf2, i, (parallel.grid_rank()[0]+1) % parallel.grid_size()[0]);
 				}
 			}
 			else if (parallel.grid_rank()[0] > 0 || parallel.grid_size()[0] % 2 == 0)
@@ -2619,7 +2727,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 						{
 							if (IDlog_sizes_recv0[q] > 0)
 							{
-								parallel.receive_dim0<long>(IDcombuf, IDlog_sizes_recv0[q], (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
+								receive_id_dim0(IDcombuf, IDlog_sizes_recv0[q], (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
 								IDcombuf += IDlog_sizes_recv0[q];
 							}
 						}
@@ -2639,7 +2747,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 						{
 							if (IDlog_sizes_recv0[q] > 0)
 							{
-								parallel.receive_dim0<long>(IDcombuf, IDlog_sizes_recv0[q], (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
+								receive_id_dim0(IDcombuf, IDlog_sizes_recv0[q], (parallel.grid_size()[0]+parallel.grid_rank()[0]-1) % parallel.grid_size()[0]);
 								IDcombuf += IDlog_sizes_recv0[q];
 							}
 						}
