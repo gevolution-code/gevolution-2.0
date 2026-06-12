@@ -1,0 +1,19 @@
+# Example workstation configuration for an NVIDIA RTX 3060.
+# Copy this file to config/local.mk and adjust it for the local installation.
+
+CUDA_ARCH := sm_86
+LATFIELD2_DIR := ../LATfield2
+
+USE_PKG_CONFIG := 1
+ENABLE_CLASS := 0
+ENABLE_HEALPIX := 1
+
+# Optional compile-time features:
+# EXTRA_DEFINES += FIXED_ICS
+# EXTRA_DEFINES += VELOCITY
+# EXTRA_DEFINES += CHECK_B
+
+# Add non-pkg-config include and library paths as needed:
+# CPPFLAGS += -I/opt/example/include
+# LDFLAGS += -L/opt/example/lib
+# LDLIBS += -lexample

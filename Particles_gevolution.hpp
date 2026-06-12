@@ -2474,10 +2474,7 @@ void perfParticles_gevolution<part,part_info>::loadGadget2(string filename, gadg
 	IDs = malloc(sizeof(int32_t) * PCLBUFFER);
 #endif
 
-	size_t reader_workspace_bytes = DeviceWorkspace::aligned_bytes<float>(3 * PCLBUFFER)
-	                              + DeviceWorkspace::aligned_bytes<float>(3 * PCLBUFFER)
-	                              + DeviceWorkspace::align_up(sizeof(int64_t) * PCLBUFFER)
-	                              + DeviceWorkspace::aligned_bytes<unsigned long long int>(1);
+	size_t reader_workspace_bytes = particle_io_staging_workspace_bytes(PCLBUFFER);
 	DeviceWorkspace reader_workspace(reader_workspace_bytes, "Gadget-2 particle input", "particle staging buffers");
 	float * d_posdata = reader_workspace.slice<float>(3 * PCLBUFFER, "position staging buffer");
 	float * d_veldata = reader_workspace.slice<float>(3 * PCLBUFFER, "velocity staging buffer");
@@ -2924,10 +2921,7 @@ void perfParticles_gevolution<part,part_info>::loadGadget2_express(string filena
 	IDs = malloc(sizeof(int32_t) * PCLBUFFER);
 #endif
 
-	size_t reader_workspace_bytes = DeviceWorkspace::aligned_bytes<float>(3 * PCLBUFFER)
-	                              + DeviceWorkspace::aligned_bytes<float>(3 * PCLBUFFER)
-	                              + DeviceWorkspace::align_up(sizeof(int64_t) * PCLBUFFER)
-	                              + DeviceWorkspace::aligned_bytes<unsigned long long int>(1);
+	size_t reader_workspace_bytes = particle_io_staging_workspace_bytes(PCLBUFFER);
 	DeviceWorkspace reader_workspace(reader_workspace_bytes, "legacy express Gadget-2 particle input", "particle staging buffers");
 	float * d_posdata = reader_workspace.slice<float>(3 * PCLBUFFER, "position staging buffer");
 	float * d_veldata = reader_workspace.slice<float>(3 * PCLBUFFER, "velocity staging buffer");

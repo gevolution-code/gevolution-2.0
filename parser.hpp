@@ -2186,7 +2186,7 @@ int parseMetadata(parameter * & params, const int numparam, metadata & sim, cosm
 	{
 		if (params[i].used) usedparams++;
 		else
-			addParserDiagnostic(false, params[i].line, params[i].name, params[i].value, "not used by gevolution; retained for CLASS or another compatible build");
+			addParserDiagnostic(false, params[i].line, params[i].name, params[i].value, "not used by gevolution");
 	}
 	
 	return usedparams;

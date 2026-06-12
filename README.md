@@ -1,7 +1,7 @@
 # gevolution-2.0
 
-Copyright (c) 2015-2025 Julian Adamek
-(Université de Genève & Observatoire de Paris & Queen Mary University of London & Universität Zürich)
+Copyright (c) 2015-2026 Julian Adamek
+(Université de Genève & Observatoire de Paris & Queen Mary University of London & Universität Zürich & ETH Zürich)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -31,17 +31,23 @@ installed:
 * GNU Scientific Library (GSL) including CBLAS
 * HDF5
 
-Make sure that the include paths are set properly, or add them to the
-makefile. Also check the compiler settings in the makefile. The code is
-compiled by typing:
+Create a local build configuration and set the CUDA architecture and dependency
+paths for the target system:
 
-    make
+    cp config/local.mk.example config/local.mk
+    make print-config
+    make -j
+
+The ignored `config/local.mk` file is intended for workstation- or
+cluster-specific settings. The tracked CSCS Alps profile can be selected with:
+
+    make CONFIG=config/alps.mk
 
 A typical command to run a simulation looks like this:
 
     mpirun -np 16 ./gevolution -n 4 -m 4 -s settings.ini
 
-For further information, please refer to the User Manual (manual.pdf)
+For further information, please refer to the online documentation at [gevolution-code.net](https://gevolution-code.net/docs/gevolution-gpu)
 
 ## Credits
 
@@ -50,6 +56,4 @@ If you use gevolution for scientific work, we kindly ask you to cite
 in your publications.
 
 For bug reports and other important feedback you can contact the authors,
-julian.adamek@uzh.ch (for queries related to gevolution)
-developers@latfield.org (for queries related to the LATfield2 library)
-
+adamekj@ethz.ch

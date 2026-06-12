@@ -134,6 +134,20 @@ private:
 	const char * buffer_class_;
 };
 
+inline size_t particle_io_staging_workspace_bytes(size_t particle_count)
+{
+	return DeviceWorkspace::aligned_bytes<float>(3 * particle_count)
+	     + DeviceWorkspace::aligned_bytes<float>(3 * particle_count)
+	     + DeviceWorkspace::align_up(sizeof(int64_t) * particle_count)
+	     + DeviceWorkspace::aligned_bytes<unsigned long long int>(1);
+}
+
+inline size_t device_workspace_preallocation_bytes(size_t existing_requirement, size_t particle_io_count)
+{
+	const size_t io_requirement = particle_io_staging_workspace_bytes(particle_io_count);
+	return existing_requirement > io_requirement ? existing_requirement : io_requirement;
+}
+
 inline void device_radix_sort_host_ids(long * ids, size_t count, const char * context)
 {
 	if (count < 2)

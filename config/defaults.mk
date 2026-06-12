@@ -1,0 +1,30 @@
+# Generic defaults. Override these in config/local.mk, a tracked profile, or
+# directly on the make command line.
+
+NVCC ?= nvcc
+CXX ?= g++
+MPICXX ?= mpic++
+PKG_CONFIG ?= pkg-config
+
+CUDA_ARCH ?=
+LATFIELD2_DIR ?= ../LATfield2
+
+PRECISION ?= single
+PARALLEL_HDF5 ?= 1
+ENABLE_CLASS ?= 0
+ENABLE_HEALPIX ?= 0
+USE_PKG_CONFIG ?= 0
+ENABLE_ALPS_TARGETS ?= 0
+PARALLEL_HDF5_PKG ?= hdf5-openmpi
+SERIAL_HDF5_PKG ?= hdf5
+
+COMMON_DEFINES ?= PHINONLINEAR BENCHMARK EXACT_OUTPUT_REDSHIFTS COLORTERMINAL GRADIENT_ORDER=2 PARTICLE_LC_BALANCED_IO=1
+EXTRA_DEFINES ?=
+
+CPPFLAGS ?=
+NVCCFLAGS ?= -O3 -g
+CXXFLAGS ?= -O3 -g
+LDFLAGS ?=
+LDLIBS ?=
+LCMAP_CPPFLAGS ?=
+LCMAP_LDLIBS ?=

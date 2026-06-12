@@ -1862,7 +1862,8 @@ parameter * params, int & numparam)
 
 	uint64_t capacity = (16L * sim.numpcl[0] * (long) ic.numtile[0] * (long) ic.numtile[0] * (long) ic.numtile[0]) / (parallel.size() * 15L);
 
-	plan_source->preallocate((capacity+PCL_EXTRA_CAPACITY) * 3L * sizeof(Real));
+	plan_source->preallocate(device_workspace_preallocation_bytes(
+		(capacity + PCL_EXTRA_CAPACITY) * 3L * sizeof(Real), PCLBUFFER));
 	
 	nvtxRangePushA("generateCICKernel");
 	if (ic.flags & ICFLAG_CORRECT_DISPLACEMENT)

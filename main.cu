@@ -207,7 +207,16 @@ int main(int argc, char **argv)
 		cudaGetDeviceProperties(&deviceProp, device);
 		COUT << " Device " << device << ": " << deviceProp.name << " with " << deviceProp.multiProcessorCount << " SMs, CC " << deviceProp.major << "." << deviceProp.minor << ", global memory " << deviceProp.totalGlobalMem / (1024*1024) << " MB" << endl << endl;
 	}
-	
+
+	if (gevolution_cuda_aware_mpi_active())
+	{
+		COUT << " CUDA-aware MPI: enabled; gevolution will communicate directly from device buffers." << endl;
+	}
+	else
+	{
+		COUT << " CUDA-aware MPI: disabled; gevolution will use host-staged fallbacks for device-buffer communication." << endl;
+	}
+
 #if GRADIENT_ORDER > 1
 	COUT << " compiled with GRADIENT_ORDER=" << GRADIENT_ORDER << endl;
 #endif

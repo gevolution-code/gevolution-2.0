@@ -208,7 +208,8 @@ void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fou
 			particle_capacity = baryon_capacity;
 	}
 
-	plan_source->preallocate((particle_capacity + PCL_EXTRA_CAPACITY) * 3L * sizeof(Real));
+	plan_source->preallocate(device_workspace_preallocation_bytes(
+		(particle_capacity + PCL_EXTRA_CAPACITY) * 3L * sizeof(Real), PCLBUFFER));
 
 	//pcls_cdm->initialize(pcls_cdm_info, pcls_cdm_dataType, &(phi->lattice()), boxSize);
 	pcls_cdm->initialize(pcls_cdm_info, &(phi->lattice()), boxSize, PCL_EXTRA_CAPACITY, PCL_EXTRA_CAPACITY);
