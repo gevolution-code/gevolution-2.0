@@ -13,6 +13,7 @@
 #ifndef TOOLS_HEADER
 #define TOOLS_HEADER
 
+#include "cuda_staging.hpp"
 #include "lattice_loop.hpp"
 #include <vector>
 #ifdef _OPENMP
@@ -495,14 +496,18 @@ void computeVectorDiagnostics(Field<Real> & Bi, Real & mdivB, Real & mcurlB)
 	Field<Real> * fieldptr = &Bi;
 	double result[2] = { 0., 0. };
 	int reduce[2] = { MAX, MAX };
+	DeviceStagingBuffer<Field<Real> *> d_fieldptr(&fieldptr, 1);
+	DeviceStagingBuffer<double> d_result(result, 2);
+	DeviceStagingBuffer<int> d_reduce(reduce, 2);
 
 	int numpts = Bi.lattice().sizeLocal(0);
 	int block_x = Bi.lattice().sizeLocal(1);
 	int block_y = Bi.lattice().sizeLocal(2);
 
-	lattice_for_each<computeVectorDiagnostics_functor, 2><<<dim3(block_x, block_y), 128>>>(computeVectorDiagnostics_functor(), numpts, &fieldptr, 1, nullptr, result, reduce);
+	lattice_for_each<computeVectorDiagnostics_functor, 2><<<dim3(block_x, block_y), 128>>>(computeVectorDiagnostics_functor(), numpts, d_fieldptr.data(), 1, nullptr, d_result.data(), d_reduce.data());
 
 	cudaDeviceSynchronize();
+	d_result.copy_to_host(result, 2);
 
 	parallel.max<double>(result, 2);
 
@@ -572,14 +577,18 @@ void computeTensorDiagnostics(Field<Real> & hij, Real & mdivh, Real & mtraceh, R
 	Field<Real> * fieldptr = &hij;
 	double result[3] = { 0., 0., 0. };
 	int reduce[3] = { MAX, MAX, MAX };
+	DeviceStagingBuffer<Field<Real> *> d_fieldptr(&fieldptr, 1);
+	DeviceStagingBuffer<double> d_result(result, 3);
+	DeviceStagingBuffer<int> d_reduce(reduce, 3);
 
 	int numpts = hij.lattice().sizeLocal(0);
 	int block_x = hij.lattice().sizeLocal(1);
 	int block_y = hij.lattice().sizeLocal(2);
 
-	lattice_for_each<computeTensorDiagnostics_functor, 3><<<dim3(block_x, block_y), 128>>>(computeTensorDiagnostics_functor(), numpts, &fieldptr, 1, nullptr, result, reduce);
+	lattice_for_each<computeTensorDiagnostics_functor, 3><<<dim3(block_x, block_y), 128>>>(computeTensorDiagnostics_functor(), numpts, d_fieldptr.data(), 1, nullptr, d_result.data(), d_reduce.data());
 
 	cudaDeviceSynchronize();
+	d_result.copy_to_host(result, 3);
 
 	parallel.max<double>(result, 3);
 

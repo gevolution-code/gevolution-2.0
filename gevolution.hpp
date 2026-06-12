@@ -29,6 +29,9 @@
 #ifndef GEVOLUTION_HEADER
 #define GEVOLUTION_HEADER
 
+#include "cuda_staging.hpp"
+#include "cuda_aware_mpi.hpp"
+#include "device_workspace.hpp"
 #include "lattice_loop.hpp"
 #include <cuda/atomic>
 
@@ -116,6 +119,7 @@ struct prepareFTsource_Tij_functor
 void prepareFTsource(Field<Real> & phi, Field<Real> & Tij, Field<Real> & Sij, const double coeff)
 {
 	Field<Real> * fields[3] = {&Sij, &Tij, &phi};
+	DeviceStagingBuffer<Field<Real> *> d_fields(fields, 3);
 	double params = coeff;
 	double * d_params;
 
@@ -126,7 +130,7 @@ void prepareFTsource(Field<Real> & phi, Field<Real> & Tij, Field<Real> & Sij, co
 	int block_x = phi.lattice().sizeLocal(1);
 	int block_y = phi.lattice().sizeLocal(2);
 
-	lattice_for_each<<<dim3(block_x, block_y), 128>>>(prepareFTsource_Tij_functor(), numpts, fields, 3, d_params, nullptr, nullptr);
+	lattice_for_each<<<dim3(block_x, block_y), 128>>>(prepareFTsource_Tij_functor(), numpts, d_fields.data(), 3, d_params, nullptr, nullptr);
 
 	cudaDeviceSynchronize();
 
@@ -179,6 +183,7 @@ struct prepareFTsource_T00_functor
 double prepareFTsource(Field<Real> & phi, Field<Real> & chi, Field<Real> & source, const double bgmodel, Field<Real> & result, const double coeff, const double coeff2, const double coeff3)
 {
 	Field<Real> * fields[4] = {&result, &source, &phi, &chi};
+	DeviceStagingBuffer<Field<Real> *> d_fields(fields, 4);
 	double params[4] = {bgmodel, coeff, coeff2, coeff3};
 	double sum = 0.;
 	int reduce = SUM;
@@ -198,7 +203,7 @@ double prepareFTsource(Field<Real> & phi, Field<Real> & chi, Field<Real> & sourc
 	int block_x = result.lattice().sizeLocal(1);
 	int block_y = result.lattice().sizeLocal(2);
 
-	lattice_for_each<prepareFTsource_T00_functor, 1><<<dim3(block_x, block_y), 128>>>(prepareFTsource_T00_functor(), numpts, fields, 4, d_params, d_sum, d_reduce);
+	lattice_for_each<prepareFTsource_T00_functor, 1><<<dim3(block_x, block_y), 128>>>(prepareFTsource_T00_functor(), numpts, d_fields.data(), 4, d_params, d_sum, d_reduce);
 
 	cudaDeviceSynchronize();
 
@@ -1540,57 +1545,21 @@ void projection_comm1(Field<Real> * field)
 	int sizeLocal[3] = {field->lattice().sizeLocal(0), field->lattice().sizeLocal(1), field->lattice().sizeLocal(2)};
 	int halo = field->lattice().halo();
 	long sizeLocalGross[3] = {sizeLocal[0]+2*halo, sizeLocal[1]+2*halo, sizeLocal[2]+2*halo};
+	DeviceStagingBuffer<long> d_sizeLocalGross(sizeLocalGross, 3);
 	
 	long buffer_size_y = static_cast<long>(sizeLocal[2]+1) * static_cast<long>(sizeLocal[0]) * static_cast<long>(field->components());
 	long buffer_size_z = static_cast<long>(sizeLocal[1]) * static_cast<long>(sizeLocal[0]) * static_cast<long>(field->components());
 	long buffer_size = buffer_size_y>buffer_size_z ? buffer_size_y : buffer_size_z;
+	const bool cuda_aware = gevolution_cuda_aware_mpi_active();
+	size_t workspace_bytes = 2 * DeviceWorkspace::aligned_bytes<Real>(buffer_size);
+	DeviceWorkspace workspace(workspace_bytes, "projection_comm1", "projection communication buffers");
+	Real * d_buffer = workspace.slice<Real>(buffer_size, "send buffer");
+	Real * d_rec_buffer = workspace.slice<Real>(buffer_size, "receive buffer");
+	vector<Real> host_workspace(cuda_aware ? 0 : 2 * buffer_size);
+	Real * mpi_buffer = cuda_aware ? d_buffer : host_workspace.data();
+	Real * mpi_rec_buffer = cuda_aware ? d_rec_buffer : host_workspace.data() + buffer_size;
 
-	auto env_enabled = [](const char *name)
-	{
-		const char *v = std::getenv(name);
-		return v != nullptr && strcmp(v, "0") != 0 && strcmp(v, "false") != 0 && strcmp(v, "FALSE") != 0;
-	};
-
-	const bool cuda_aware =
-		!env_enabled("LATFIELD2_DISABLE_CUDA_AWARE_MPI") &&
-		(
-			env_enabled("LATFIELD2_ENABLE_CUDA_AWARE_MPI") ||
-			env_enabled("MPICH_GPU_SUPPORT_ENABLED") ||
-			env_enabled("MV2_USE_CUDA") ||
-			env_enabled("PSM2_CUDA") ||
-			env_enabled("OMPI_MCA_opal_cuda_support") ||
-			env_enabled("OMPI_MCA_mpi_cuda_support")
-		);
-
-	Real *buffer = nullptr;
-	Real *rec_buffer = nullptr;
-	void *device_workspace = nullptr;
-	bool private_device_workspace = false;
-
-	if (cuda_aware)
-	{
-		size_t workspace_bytes = 2 * sizeof(Real) * buffer_size;
-
-#ifdef FFT3D
-		tempMemory.reserveDeviceWorkspaceBytes(workspace_bytes, "projection_comm1");
-		device_workspace = tempMemory.deviceWorkspace();
-#else
-		auto success = cudaMalloc(&device_workspace, workspace_bytes);
-		if (success != cudaSuccess)
-			throw std::runtime_error("CUDA allocation failed in projection_comm1");
-		private_device_workspace = true;
-#endif
-
-		buffer = static_cast<Real *>(device_workspace);
-		rec_buffer = buffer + buffer_size;
-	}
-	else
-	{
-		buffer = static_cast<Real *>(malloc(2 * sizeof(Real) * buffer_size));
-		rec_buffer = buffer + buffer_size;
-	}
-
-	projection_comm1_localhalo<<<sizeLocal[2]+2, 128>>>(field, sizeLocalGross, halo);
+	projection_comm1_localhalo<<<sizeLocal[2]+2, 128>>>(field, d_sizeLocalGross.data(), halo);
 
 	auto success = cudaDeviceSynchronize();
 
@@ -1600,7 +1569,7 @@ void projection_comm1(Field<Real> * field)
 		throw std::runtime_error("Error in projection_comm1_localhalo");
 	}
 
-	projection_comm1_pack_y<<<sizeLocal[2]+1, 128>>>(field, sizeLocalGross, halo, buffer);
+	projection_comm1_pack_y<<<sizeLocal[2]+1, 128>>>(field, d_sizeLocalGross.data(), halo, d_buffer);
 
 	success = cudaDeviceSynchronize();
 
@@ -1610,9 +1579,11 @@ void projection_comm1(Field<Real> * field)
 		throw std::runtime_error("Error in projection_comm1_pack_y");
 	}
 
-	parallel.sendUp_dim1(buffer, rec_buffer, buffer_size_y);
+	if (!cuda_aware) cudaMemcpy(mpi_buffer, d_buffer, sizeof(Real) * buffer_size_y, cudaMemcpyDeviceToHost);
+	parallel.sendUp_dim1(mpi_buffer, mpi_rec_buffer, buffer_size_y);
+	if (!cuda_aware) cudaMemcpy(d_rec_buffer, mpi_rec_buffer, sizeof(Real) * buffer_size_y, cudaMemcpyHostToDevice);
 
-	projection_comm1_unpack_y<<<sizeLocal[2]+1, 128>>>(field, sizeLocalGross, halo, rec_buffer);
+	projection_comm1_unpack_y<<<sizeLocal[2]+1, 128>>>(field, d_sizeLocalGross.data(), halo, d_rec_buffer);
 
 	success = cudaDeviceSynchronize();
 
@@ -1622,7 +1593,7 @@ void projection_comm1(Field<Real> * field)
 		throw std::runtime_error("Error in projection_comm1_unpack_y");
 	}
 
-	projection_comm1_pack_z<<<sizeLocal[1], 128>>>(field, sizeLocalGross, halo, buffer);
+	projection_comm1_pack_z<<<sizeLocal[1], 128>>>(field, d_sizeLocalGross.data(), halo, d_buffer);
 
 	success = cudaDeviceSynchronize();
 
@@ -1632,9 +1603,11 @@ void projection_comm1(Field<Real> * field)
 		throw std::runtime_error("Error in projection_comm1_pack_z");
 	}
 
-	parallel.sendUp_dim0(buffer, rec_buffer, buffer_size_z);
+	if (!cuda_aware) cudaMemcpy(mpi_buffer, d_buffer, sizeof(Real) * buffer_size_z, cudaMemcpyDeviceToHost);
+	parallel.sendUp_dim0(mpi_buffer, mpi_rec_buffer, buffer_size_z);
+	if (!cuda_aware) cudaMemcpy(d_rec_buffer, mpi_rec_buffer, sizeof(Real) * buffer_size_z, cudaMemcpyHostToDevice);
 
-	projection_comm1_unpack_z<<<sizeLocal[1], 128>>>(field, sizeLocalGross, halo, rec_buffer);
+	projection_comm1_unpack_z<<<sizeLocal[1], 128>>>(field, d_sizeLocalGross.data(), halo, d_rec_buffer);
 
 	success = cudaDeviceSynchronize();
 
@@ -1644,14 +1617,6 @@ void projection_comm1(Field<Real> * field)
 		throw std::runtime_error("Error in projection_comm1_unpack_z");
 	}
 
-	if (cuda_aware)
-	{
-		if (private_device_workspace) cudaFree(device_workspace);
-	}
-	else
-	{
-		free(buffer);
-	}
 }
 
 void projection_Tij_comm2(Field<Real> * field)
@@ -1659,63 +1624,28 @@ void projection_Tij_comm2(Field<Real> * field)
 	int sizeLocal[3] = {field->lattice().sizeLocal(0), field->lattice().sizeLocal(1), field->lattice().sizeLocal(2)};
 	int halo = field->lattice().halo();
 	long sizeLocalGross[3] = {sizeLocal[0]+2*halo, sizeLocal[1]+2*halo, sizeLocal[2]+2*halo};
+	DeviceStagingBuffer<long> d_sizeLocalGross(sizeLocalGross, 3);
 	
 	long buffer_size_y = static_cast<long>(sizeLocal[2]+2) * static_cast<long>(sizeLocal[0]) * 6L;
 	long buffer_size_z = static_cast<long>(sizeLocal[1]) * static_cast<long>(sizeLocal[0]) * 6L;
 	long buffer_size = buffer_size_y>buffer_size_z ? buffer_size_y : buffer_size_z;
 
-	auto env_enabled = [](const char *name)
-	{
-		const char *v = std::getenv(name);
-		return v != nullptr && strcmp(v, "0") != 0 && strcmp(v, "false") != 0 && strcmp(v, "FALSE") != 0;
-	};
+	const bool cuda_aware = gevolution_cuda_aware_mpi_active();
+	size_t workspace_bytes = 2 * DeviceWorkspace::aligned_bytes<Real>(buffer_size)
+	                       + 2 * DeviceWorkspace::aligned_bytes<Real>(buffer_size / 2);
+	DeviceWorkspace workspace(workspace_bytes, "projection_Tij_comm2", "projection communication buffers");
+	Real * d_buffer = workspace.slice<Real>(buffer_size, "send buffer");
+	Real * d_rec_buffer = workspace.slice<Real>(buffer_size, "receive buffer");
+	Real * d_buffer2 = workspace.slice<Real>(buffer_size / 2, "secondary send buffer");
+	Real * d_rec_buffer2 = workspace.slice<Real>(buffer_size / 2, "secondary receive buffer");
+	vector<Real> host_workspace(cuda_aware ? 0 : 3 * buffer_size);
+	Real * mpi_buffer = cuda_aware ? d_buffer : host_workspace.data();
+	Real * mpi_rec_buffer = cuda_aware ? d_rec_buffer : host_workspace.data() + buffer_size;
+	Real * mpi_buffer2 = cuda_aware ? d_buffer2 : host_workspace.data() + 2 * buffer_size;
+	Real * mpi_rec_buffer2 = cuda_aware ? d_rec_buffer2 : host_workspace.data() + 2 * buffer_size + buffer_size / 2;
 
-	const bool cuda_aware =
-		!env_enabled("LATFIELD2_DISABLE_CUDA_AWARE_MPI") &&
-		(
-			env_enabled("LATFIELD2_ENABLE_CUDA_AWARE_MPI") ||
-			env_enabled("MPICH_GPU_SUPPORT_ENABLED") ||
-			env_enabled("MV2_USE_CUDA") ||
-			env_enabled("PSM2_CUDA") ||
-			env_enabled("OMPI_MCA_opal_cuda_support") ||
-			env_enabled("OMPI_MCA_mpi_cuda_support")
-		);
-
-	Real *buffer = nullptr;
-	Real *rec_buffer = nullptr;
-	Real *buffer2 = nullptr;
-	Real *rec_buffer2 = nullptr;
-	void *device_workspace = nullptr;
-	bool private_device_workspace = false;
-
-	if (cuda_aware)
-	{
-		size_t workspace_bytes = 3 * sizeof(Real) * buffer_size;
-
-#ifdef FFT3D
-		tempMemory.reserveDeviceWorkspaceBytes(workspace_bytes, "projection_Tij_comm2");
-		device_workspace = tempMemory.deviceWorkspace();
-#else
-		auto success = cudaMalloc(&device_workspace, workspace_bytes);
-		if (success != cudaSuccess)
-			throw std::runtime_error("CUDA allocation failed in projection_Tij_comm2");
-		private_device_workspace = true;
-#endif
-
-		buffer = static_cast<Real *>(device_workspace);
-	}
-	else
-	{
-		buffer = static_cast<Real *>(malloc(3 * sizeof(Real) * buffer_size));
-	}
-
-	rec_buffer = buffer + buffer_size;
-	buffer2 = rec_buffer + buffer_size;
-	rec_buffer2 = buffer2 + buffer_size/2;
-
-	projection_comm1_localhalo<<<sizeLocal[2]+2, 128>>>(field, sizeLocalGross, halo);
-
-	projection_comm2_localhalo<<<sizeLocal[2]+2, 128>>>(field, sizeLocalGross, halo);
+	projection_comm1_localhalo<<<sizeLocal[2]+2, 128>>>(field, d_sizeLocalGross.data(), halo);
+	projection_comm2_localhalo<<<sizeLocal[2]+2, 128>>>(field, d_sizeLocalGross.data(), halo);
 
 	auto success = cudaDeviceSynchronize();
 
@@ -1725,7 +1655,7 @@ void projection_Tij_comm2(Field<Real> * field)
 		throw std::runtime_error("Error in projection_comm[1/2]_localhalo");
 	}
 
-	projection_comm2_pack_y<<<sizeLocal[2]+2, 128>>>(field, sizeLocalGross, halo, buffer, buffer2);
+	projection_comm2_pack_y<<<sizeLocal[2]+2, 128>>>(field, d_sizeLocalGross.data(), halo, d_buffer, d_buffer2);
 
 	success = cudaDeviceSynchronize();
 
@@ -1735,9 +1665,19 @@ void projection_Tij_comm2(Field<Real> * field)
 		throw std::runtime_error("Error in projection_comm2_pack_y");
 	}
 
-	parallel.sendUpDown_dim1(buffer, rec_buffer, buffer_size_y, buffer2, rec_buffer2, buffer_size_y/2);
+	if (!cuda_aware)
+	{
+		cudaMemcpy(mpi_buffer, d_buffer, sizeof(Real) * buffer_size_y, cudaMemcpyDeviceToHost);
+		cudaMemcpy(mpi_buffer2, d_buffer2, sizeof(Real) * buffer_size_y / 2, cudaMemcpyDeviceToHost);
+	}
+	parallel.sendUpDown_dim1(mpi_buffer, mpi_rec_buffer, buffer_size_y, mpi_buffer2, mpi_rec_buffer2, buffer_size_y/2);
+	if (!cuda_aware)
+	{
+		cudaMemcpy(d_rec_buffer, mpi_rec_buffer, sizeof(Real) * buffer_size_y, cudaMemcpyHostToDevice);
+		cudaMemcpy(d_rec_buffer2, mpi_rec_buffer2, sizeof(Real) * buffer_size_y / 2, cudaMemcpyHostToDevice);
+	}
 
-	projection_comm2_unpack_y<<<sizeLocal[2]+2, 128>>>(field, sizeLocalGross, halo, rec_buffer, rec_buffer2);
+	projection_comm2_unpack_y<<<sizeLocal[2]+2, 128>>>(field, d_sizeLocalGross.data(), halo, d_rec_buffer, d_rec_buffer2);
 
 	success = cudaDeviceSynchronize();
 
@@ -1747,9 +1687,8 @@ void projection_Tij_comm2(Field<Real> * field)
 		throw std::runtime_error("Error in projection_comm2_unpack_y");
 	}
 
-	projection_comm1_pack_z<<<sizeLocal[1], 128>>>(field, sizeLocalGross, halo, buffer);
-
-	projection_comm2_pack_z<<<sizeLocal[1], 128>>>(field, sizeLocalGross, halo, buffer2);
+	projection_comm1_pack_z<<<sizeLocal[1], 128>>>(field, d_sizeLocalGross.data(), halo, d_buffer);
+	projection_comm2_pack_z<<<sizeLocal[1], 128>>>(field, d_sizeLocalGross.data(), halo, d_buffer2);
 
 	success = cudaDeviceSynchronize();
 
@@ -1759,11 +1698,20 @@ void projection_Tij_comm2(Field<Real> * field)
 		throw std::runtime_error("Error in projection_comm[1/2]_pack_z");
 	}
 
-	parallel.sendUpDown_dim0(buffer, rec_buffer, buffer_size_z, buffer2, rec_buffer2, buffer_size_z/2);
+	if (!cuda_aware)
+	{
+		cudaMemcpy(mpi_buffer, d_buffer, sizeof(Real) * buffer_size_z, cudaMemcpyDeviceToHost);
+		cudaMemcpy(mpi_buffer2, d_buffer2, sizeof(Real) * buffer_size_z / 2, cudaMemcpyDeviceToHost);
+	}
+	parallel.sendUpDown_dim0(mpi_buffer, mpi_rec_buffer, buffer_size_z, mpi_buffer2, mpi_rec_buffer2, buffer_size_z/2);
+	if (!cuda_aware)
+	{
+		cudaMemcpy(d_rec_buffer, mpi_rec_buffer, sizeof(Real) * buffer_size_z, cudaMemcpyHostToDevice);
+		cudaMemcpy(d_rec_buffer2, mpi_rec_buffer2, sizeof(Real) * buffer_size_z / 2, cudaMemcpyHostToDevice);
+	}
 
-	projection_comm1_unpack_z<<<sizeLocal[1], 128>>>(field, sizeLocalGross, halo, rec_buffer);
-
-	projection_comm2_unpack_z<<<sizeLocal[1], 128>>>(field, sizeLocalGross, halo, rec_buffer2);
+	projection_comm1_unpack_z<<<sizeLocal[1], 128>>>(field, d_sizeLocalGross.data(), halo, d_rec_buffer);
+	projection_comm2_unpack_z<<<sizeLocal[1], 128>>>(field, d_sizeLocalGross.data(), halo, d_rec_buffer2);
 
 	success = cudaDeviceSynchronize();
 
@@ -1773,14 +1721,6 @@ void projection_Tij_comm2(Field<Real> * field)
 		throw std::runtime_error("Error in projection_comm[1/2]_unpack_z");
 	}
 
-	if (cuda_aware)
-	{
-		if (private_device_workspace) cudaFree(device_workspace);
-	}
-	else
-	{
-		free(buffer);
-	}
 }
 
 #define projection_T00_comm projection_comm1
@@ -1953,8 +1893,9 @@ void projection_T00_project(perfParticles<part_simple, part_simple_info> * pcls,
 	double params[2];
 	params[0] = a;
 	params[1] = coeff;
+	DeviceStagingBuffer<double> d_params(params, 2);
 
-	pcls->projectParticles(particle_T00_project_functor(), fields, (phi == nullptr ? 1 : 2), params);
+	pcls->projectParticles(particle_T00_project_functor(), fields, (phi == nullptr ? 1 : 2), d_params.data());
 }
 
 
@@ -2293,8 +2234,9 @@ void projection_T0i_project(perfParticles<part_simple, part_simple_info> * pcls,
 	Field<Real> * fields[2];
 	fields[0] = T0i;
 	fields[1] = phi;
+	DeviceStagingBuffer<double> d_coeff(&coeff, 1);
 
-	pcls->projectParticles(particle_T0i_project_functor(), fields, (phi == nullptr ? 1 : 2), &coeff);
+	pcls->projectParticles(particle_T0i_project_functor(), fields, (phi == nullptr ? 1 : 2), d_coeff.data());
 }
 
 void projection_T0i_project_Async(perfParticles<part_simple, part_simple_info> * pcls, Field<Real> ** fields, int nfield, double * params)
@@ -3080,8 +3022,9 @@ void projection_Tij_project(perfParticles<part_simple, part_simple_info> * pcls,
 		params[5] = 0.;
 		params[6] = 0.;
 	}
+	DeviceStagingBuffer<double> d_params(params, 7);
 
-	pcls->projectParticles(particle_Tij_project_functor(), fields, (phi == nullptr ? 1 : 2), params);
+	pcls->projectParticles(particle_Tij_project_functor(), fields, (phi == nullptr ? 1 : 2), d_params.data());
 }
 
 void projection_Tij_project_Async(perfParticles<part_simple, part_simple_info> * pcls, Field<Real> ** fields, int nfield, double * params)
@@ -3386,8 +3329,9 @@ void projection_Ti0_project(perfParticles<part_simple, part_simple_info> * pcls,
 		nfield++;
 		if (chi != nullptr) nfield++;
 	}
+	DeviceStagingBuffer<double> d_coeff(&coeff, 1);
 
-	pcls->projectParticles(particle_Ti0_project_functor(), fields, nfield, &coeff);
+	pcls->projectParticles(particle_Ti0_project_functor(), fields, nfield, d_coeff.data());
 }
 
 
@@ -3531,4 +3475,3 @@ void projectFTomega(Field<Cplx> & viFT)
 }
 
 #endif
-

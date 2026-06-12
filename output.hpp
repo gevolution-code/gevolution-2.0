@@ -21,8 +21,9 @@
 #include <stdexcept>
 #include <stdint.h>
 #include <nvtx3/nvToolsExt.h>
+#include "cuda_staging.hpp"
 #include "cuda_aware_mpi.hpp"
-#include "lightcone_device_workspace.hpp"
+#include "device_workspace.hpp"
 
 using namespace std;
 
@@ -227,10 +228,12 @@ void writeSnapshots(metadata & sim, cosmology & cosmo, const double fourpiG, con
 
 		double params = 1. / (a * a * sim.numpts);
 		double * d_params;
+		Field<Real> * fieldptr = Bi;
+		DeviceStagingBuffer<Field<Real> *> d_fieldptr(&fieldptr, 1);
 		cudaMalloc((void **) &d_params, sizeof(double));
 		cudaMemcpy(d_params, &params, sizeof(double), cudaMemcpyDefault);
 
-		lattice_for_each<<<dim3(Bi->lattice().sizeLocal(1), Bi->lattice().sizeLocal(2)), 128>>>(lattice_multiply_functor<3>(), sim.numpts, &Bi, 1, d_params, nullptr, nullptr);
+		lattice_for_each<<<dim3(Bi->lattice().sizeLocal(1), Bi->lattice().sizeLocal(2)), 128>>>(lattice_multiply_functor<3>(), sim.numpts, d_fieldptr.data(), 1, d_params, nullptr, nullptr);
 
 		cudaDeviceSynchronize();
 		cudaFree(d_params);
@@ -381,10 +384,12 @@ void writeSnapshots(metadata & sim, cosmology & cosmo, const double fourpiG, con
 
 		double params = 1. / (a * a * sim.numpts);
 		double * d_params;
+		Field<Real> * fieldptr = Bi_check;
+		DeviceStagingBuffer<Field<Real> *> d_fieldptr(&fieldptr, 1);
 		cudaMalloc((void **) &d_params, sizeof(double));
 		cudaMemcpy(d_params, &params, sizeof(double), cudaMemcpyDefault);
 
-		lattice_for_each<<<dim3(Bi_check->lattice().sizeLocal(1), Bi_check->lattice().sizeLocal(2)), 128>>>(lattice_multiply_functor<3>(), sim.numpts, &Bi_check, 1, d_params, nullptr, nullptr);
+		lattice_for_each<<<dim3(Bi_check->lattice().sizeLocal(1), Bi_check->lattice().sizeLocal(2)), 128>>>(lattice_multiply_functor<3>(), sim.numpts, d_fieldptr.data(), 1, d_params, nullptr, nullptr);
 
 		cudaDeviceSynchronize();
 		cudaFree(d_params);
@@ -525,8 +530,14 @@ void writeSnapshots(metadata & sim, cosmology & cosmo, const double fourpiG, con
 #define HEALPIX_SHELL_CHUNK 16
 #endif
 
+struct HealpixProjectionGeometry
+{
+	double vertex[3];
+	double rotation[3][3];
+};
+
 // CUDA kernel for projection of metric to Healpix maps
-__global__ void project_metric_to_healpix_batch(Real * pixbuf_phi, Real * pixbuf_chi, Real * pixbuf_B1, Real * pixbuf_B2, Real * pixbuf_B3, Real * pixbuf_h11, Real * pixbuf_h12, Real * pixbuf_h13, Real * pixbuf_h22, Real * pixbuf_h23, int64_t nside, int64_t pix, Real a2, double dist, double vertex[3], double R[3][3], int numpts, Field<Real> ** fields, int outputs, int batchsize, int64_t * packmap)
+__global__ void project_metric_to_healpix_batch(Real * pixbuf_phi, Real * pixbuf_chi, Real * pixbuf_B1, Real * pixbuf_B2, Real * pixbuf_B3, Real * pixbuf_h11, Real * pixbuf_h12, Real * pixbuf_h13, Real * pixbuf_h22, Real * pixbuf_h23, int64_t nside, int64_t pix, Real a2, double dist, HealpixProjectionGeometry geometry, int numpts, Field<Real> ** fields, int outputs, int batchsize, int64_t * packmap)
 {
 	int64_t q = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -549,9 +560,9 @@ __global__ void project_metric_to_healpix_batch(Real * pixbuf_phi, Real * pixbuf
 	double temp;
 	int base_pos[3];
 
-	pos[0] = (dist * (R[0][0] * w[0] + R[0][1] * w[1] + R[0][2] * w[2]) + vertex[0]) * numpts;
-	pos[1] = (dist * (R[1][0] * w[0] + R[1][1] * w[1] + R[1][2] * w[2]) + vertex[1]) * numpts;
-	pos[2] = (dist * (R[2][0] * w[0] + R[2][1] * w[1] + R[2][2] * w[2]) + vertex[2]) * numpts;
+	pos[0] = (dist * (geometry.rotation[0][0] * w[0] + geometry.rotation[0][1] * w[1] + geometry.rotation[0][2] * w[2]) + geometry.vertex[0]) * numpts;
+	pos[1] = (dist * (geometry.rotation[1][0] * w[0] + geometry.rotation[1][1] * w[1] + geometry.rotation[1][2] * w[2]) + geometry.vertex[1]) * numpts;
+	pos[2] = (dist * (geometry.rotation[2][0] * w[0] + geometry.rotation[2][1] * w[1] + geometry.rotation[2][2] * w[2]) + geometry.vertex[2]) * numpts;
 
 	if (pos[0] >= 0)
 	{
@@ -1004,7 +1015,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 	long * IDcombuf3 = NULL;
 	long * IDcombuf4 = NULL;
 	long * IDprelog_device[9];
-	LightconeDeviceWorkspace * IDprelog_workspace = NULL;
+	DeviceWorkspace * IDprelog_workspace = NULL;
 	const bool cuda_aware_mpi_active = gevolution_cuda_aware_mpi_active();
 	auto send_id_dim0 = [&](long * device_buffer, int count, int destination)
 	{
@@ -1134,6 +1145,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 		outbuf[j] = NULL;
 
 	Field<Real> * fields[4] = {phi, chi, Bi, Sij};
+	DeviceStagingBuffer<Field<Real> *> d_fields(fields, 4);
 	int64_t * packmap[2] = {nullptr, nullptr};
 	int kernels_running = 0;
 	bool healpix_send_workspace_fallback_warning = false;
@@ -1227,6 +1239,9 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 			R[2][1] = 0;
 			R[2][2] = sim.lightcone[i].direction[2];
 		}
+		HealpixProjectionGeometry projection_geometry;
+		memcpy(projection_geometry.vertex, sim.lightcone[i].vertex, sizeof(projection_geometry.vertex));
+		memcpy(projection_geometry.rotation, R, sizeof(projection_geometry.rotation));
 #endif
 
 		if (sim.lightcone[i].distance[0] > s[0] && sim.lightcone[i].distance[1] <= s[1] && s[1] > 0.)
@@ -1574,11 +1589,11 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 								nvtxRangePop();
 							}
 
-							project_metric_to_healpix_batch<<<(desc.pixbatch_size[0] + 127) / 128, 128>>>(pixbuf[LIGHTCONE_PHI_OFFSET][j]+pixbuf_size[j], pixbuf[LIGHTCONE_CHI_OFFSET][j]+pixbuf_size[j], pixbuf[LIGHTCONE_B_OFFSET][j]+pixbuf_size[j], pixbuf[LIGHTCONE_B_OFFSET+1][j]+pixbuf_size[j], pixbuf[LIGHTCONE_B_OFFSET+2][j]+pixbuf_size[j], pixbuf[LIGHTCONE_HIJ_OFFSET][j]+pixbuf_size[j], pixbuf[LIGHTCONE_HIJ_OFFSET+1][j]+pixbuf_size[j], pixbuf[LIGHTCONE_HIJ_OFFSET+2][j]+pixbuf_size[j], pixbuf[LIGHTCONE_HIJ_OFFSET+3][j]+pixbuf_size[j], pixbuf[LIGHTCONE_HIJ_OFFSET+4][j]+pixbuf_size[j], maphdr.Nside, pix, a*a, maphdr.distance, sim.lightcone[i].vertex, R, sim.numpts, fields, sim.out_lightcone[i], desc.pixbatch_size[0], packmap[pixbatch_type-1]);
+							project_metric_to_healpix_batch<<<(desc.pixbatch_size[0] + 127) / 128, 128>>>(pixbuf[LIGHTCONE_PHI_OFFSET][j]+pixbuf_size[j], pixbuf[LIGHTCONE_CHI_OFFSET][j]+pixbuf_size[j], pixbuf[LIGHTCONE_B_OFFSET][j]+pixbuf_size[j], pixbuf[LIGHTCONE_B_OFFSET+1][j]+pixbuf_size[j], pixbuf[LIGHTCONE_B_OFFSET+2][j]+pixbuf_size[j], pixbuf[LIGHTCONE_HIJ_OFFSET][j]+pixbuf_size[j], pixbuf[LIGHTCONE_HIJ_OFFSET+1][j]+pixbuf_size[j], pixbuf[LIGHTCONE_HIJ_OFFSET+2][j]+pixbuf_size[j], pixbuf[LIGHTCONE_HIJ_OFFSET+3][j]+pixbuf_size[j], pixbuf[LIGHTCONE_HIJ_OFFSET+4][j]+pixbuf_size[j], maphdr.Nside, pix, a*a, maphdr.distance, projection_geometry, sim.numpts, d_fields.data(), sim.out_lightcone[i], desc.pixbatch_size[0], packmap[pixbatch_type-1]);
 						}
 						else
 						{
-							project_metric_to_healpix_batch<<<(desc.pixbatch_size[0] + 127) / 128, 128>>>(pixbuf[LIGHTCONE_PHI_OFFSET][j]+pixbuf_size[j], pixbuf[LIGHTCONE_CHI_OFFSET][j]+pixbuf_size[j], pixbuf[LIGHTCONE_B_OFFSET][j]+pixbuf_size[j], pixbuf[LIGHTCONE_B_OFFSET+1][j]+pixbuf_size[j], pixbuf[LIGHTCONE_B_OFFSET+2][j]+pixbuf_size[j], pixbuf[LIGHTCONE_HIJ_OFFSET][j]+pixbuf_size[j], pixbuf[LIGHTCONE_HIJ_OFFSET+1][j]+pixbuf_size[j], pixbuf[LIGHTCONE_HIJ_OFFSET+2][j]+pixbuf_size[j], pixbuf[LIGHTCONE_HIJ_OFFSET+3][j]+pixbuf_size[j], pixbuf[LIGHTCONE_HIJ_OFFSET+4][j]+pixbuf_size[j], maphdr.Nside, pix, a*a, maphdr.distance, sim.lightcone[i].vertex, R, sim.numpts, fields, sim.out_lightcone[i], desc.pixbatch_size[0], nullptr);
+							project_metric_to_healpix_batch<<<(desc.pixbatch_size[0] + 127) / 128, 128>>>(pixbuf[LIGHTCONE_PHI_OFFSET][j]+pixbuf_size[j], pixbuf[LIGHTCONE_CHI_OFFSET][j]+pixbuf_size[j], pixbuf[LIGHTCONE_B_OFFSET][j]+pixbuf_size[j], pixbuf[LIGHTCONE_B_OFFSET+1][j]+pixbuf_size[j], pixbuf[LIGHTCONE_B_OFFSET+2][j]+pixbuf_size[j], pixbuf[LIGHTCONE_HIJ_OFFSET][j]+pixbuf_size[j], pixbuf[LIGHTCONE_HIJ_OFFSET+1][j]+pixbuf_size[j], pixbuf[LIGHTCONE_HIJ_OFFSET+2][j]+pixbuf_size[j], pixbuf[LIGHTCONE_HIJ_OFFSET+3][j]+pixbuf_size[j], pixbuf[LIGHTCONE_HIJ_OFFSET+4][j]+pixbuf_size[j], maphdr.Nside, pix, a*a, maphdr.distance, projection_geometry, sim.numpts, d_fields.data(), sim.out_lightcone[i], desc.pixbatch_size[0], nullptr);
 						}
 
 						kernels_running |= (1 << j);
@@ -2141,10 +2156,10 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 			{
 				int prelog_index = (IDlog_multiplicity > 1) ? p*IDlog_multiplicity+q : p;
 
-				idprelog_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<long>(IDprelog[l][prelog_index].size());
+				idprelog_workspace_bytes += DeviceWorkspace::aligned_bytes<long>(IDprelog[l][prelog_index].size());
 			}
 
-			IDprelog_workspace = new LightconeDeviceWorkspace(idprelog_workspace_bytes, "particle ID log local staging", "ID log local staging workspace");
+			IDprelog_workspace = new DeviceWorkspace(idprelog_workspace_bytes, "particle ID log local staging", "ID log local staging workspace");
 
 			for (int q = 0; q < IDlog_multiplicity; q++)
 			{
@@ -2829,7 +2844,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 			delete IDprelog_workspace;
 			IDprelog_workspace = NULL;
 
-			lightcone_device_radix_sort_host_ids(IDbacklog[l][p].data(), IDbacklog[l][p].size(), "particle ID backlog sort");
+			device_radix_sort_host_ids(IDbacklog[l][p].data(), IDbacklog[l][p].size(), "particle ID backlog sort");
 			IDbacklog[l][p].finalize_presorted();
 		}
 	}

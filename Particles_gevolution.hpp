@@ -15,7 +15,7 @@
 #include "particles/LATfield2_perfParticles.hpp"
 #include "cuda_aware_mpi.hpp"
 #include "lightcone_id_backlog.hpp"
-#include "lightcone_device_workspace.hpp"
+#include "device_workspace.hpp"
 #include <algorithm>
 #include <limits.h>
 #include <omp.h>
@@ -149,16 +149,16 @@ template <typename part, typename part_info>
 __global__ void count_tracer_particles(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, long * npart, int * npart_row);
 
 template <typename part, typename part_info>
-__global__ void count_tracer_particles(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, lightcone_geometry & lightcone, Real inner, Real outer, Real dtau_old, double vertex[MAX_INTERSECTS][3], int vertexcount, long * npart, int * npart_row, int * npart_checkID_row);
+__global__ void count_tracer_particles(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, lightcone_geometry lightcone, Real inner, Real outer, Real dtau_old, const double vertex[MAX_INTERSECTS][3], int vertexcount, long * npart, int * npart_row, int * npart_checkID_row);
 
 template <typename part, typename part_info>
-__global__ void buffer_tracer_IDs(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, lightcone_geometry & lightcone, Real inner, Real outer, Real dtau_old, double vertex[MAX_INTERSECTS][3], int vertexcount, long * IDs, long row_offset, unsigned long long int * buffer_count);
+__global__ void buffer_tracer_IDs(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, lightcone_geometry lightcone, Real inner, Real outer, Real dtau_old, const double vertex[MAX_INTERSECTS][3], int vertexcount, long * IDs, long row_offset, unsigned long long int * buffer_count);
 
 template <typename part, typename part_info>
 __global__ void buffer_tracer_particles(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, double dtau_pos, double dtau_vel, double a, double boxsize, Field<Real> * phi, float * posdata, float * veldata, long * IDs, long row_offset, unsigned long long int * buffer_count);
 
 template <typename part, typename part_info, int IDlog_scatter = 0>
-__global__ void buffer_tracer_particles(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, lightcone_geometry & lightcone, Real dist, Real inner, Real outer, double dtau, double dtau_old, double a, double dadtau, double boxsize, Real * domain, Field<Real> * phi, double vertex[MAX_INTERSECTS][3], int vertexcount, float * posdata, float * veldata, long * IDs, unsigned char * loginfo, long row_offset, unsigned long long int * buffer_count1, unsigned long long int * buffer_count2);
+__global__ void buffer_tracer_particles(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, lightcone_geometry lightcone, Real dist, Real inner, Real outer, double dtau, double dtau_old, double a, double dadtau, double boxsize, const Real * domain, Field<Real> * phi, const double vertex[MAX_INTERSECTS][3], int vertexcount, float * posdata, float * veldata, long * IDs, unsigned char * loginfo, long row_offset, unsigned long long int * buffer_count1, unsigned long long int * buffer_count2);
 
 template <typename part, typename part_info>
 __global__ void add_particles(perfParticles_gevolution<part, part_info> * pcl, float * posdata, float * veldata, void * IDs, uint32_t count, unsigned long long int * buffer_idx);
@@ -195,16 +195,16 @@ class perfParticles_gevolution: public perfParticles<part, part_info>
 		friend __global__ void count_tracer_particles(perfParticles_gevolution<part2, part_info2> * pcl, int tracer_factor, long * npart, int * npart_row);
 
 		template <typename part2, typename part_info2>
-		friend __global__ void count_tracer_particles(perfParticles_gevolution<part2, part_info2> * pcl, int tracer_factor, lightcone_geometry & lightcone, Real inner, Real outer, Real dtau_old, double vertex[MAX_INTERSECTS][3], int vertexcount, long * npart, int * npart_row, int * npart_checkID_row);
+		friend __global__ void count_tracer_particles(perfParticles_gevolution<part2, part_info2> * pcl, int tracer_factor, lightcone_geometry lightcone, Real inner, Real outer, Real dtau_old, const double vertex[MAX_INTERSECTS][3], int vertexcount, long * npart, int * npart_row, int * npart_checkID_row);
 
 		template <typename part2, typename part_info2>
-		friend __global__ void buffer_tracer_IDs(perfParticles_gevolution<part2, part_info2> * pcl, int tracer_factor, lightcone_geometry & lightcone, Real inner, Real outer, Real dtau_old, double vertex[MAX_INTERSECTS][3], int vertexcount, long * IDs, long row_offset, unsigned long long int * buffer_count);
+		friend __global__ void buffer_tracer_IDs(perfParticles_gevolution<part2, part_info2> * pcl, int tracer_factor, lightcone_geometry lightcone, Real inner, Real outer, Real dtau_old, const double vertex[MAX_INTERSECTS][3], int vertexcount, long * IDs, long row_offset, unsigned long long int * buffer_count);
 
 		template <typename part2, typename part_info2>
 		friend __global__ void buffer_tracer_particles(perfParticles_gevolution<part2, part_info2> * pcl, int tracer_factor, double dtau_pos, double dtau_vel, double a, double boxsize, Field<Real> * phi, float * posdata, float * veldata, long * IDs, long row_offset, unsigned long long int * buffer_count);
 
 		template <typename part2, typename part_info2, int IDlog_scatter>
-		friend __global__ void buffer_tracer_particles(perfParticles_gevolution<part2, part_info2> * pcl, int tracer_factor, lightcone_geometry & lightcone, Real dist, Real inner, Real outer, double dtau, double dtau_old, double a, double dadtau, double boxsize, Real * domain, Field<Real> * phi, double vertex[MAX_INTERSECTS][3], int vertexcount, float * posdata, float * veldata, long * IDs, unsigned char * loginfo, long row_offset, unsigned long long int * buffer_count1, unsigned long long int * buffer_count2);
+		friend __global__ void buffer_tracer_particles(perfParticles_gevolution<part2, part_info2> * pcl, int tracer_factor, lightcone_geometry lightcone, Real dist, Real inner, Real outer, double dtau, double dtau_old, double a, double dadtau, double boxsize, const Real * domain, Field<Real> * phi, const double vertex[MAX_INTERSECTS][3], int vertexcount, float * posdata, float * veldata, long * IDs, unsigned char * loginfo, long row_offset, unsigned long long int * buffer_count1, unsigned long long int * buffer_count2);
 
 		template <typename part2, typename part_info2>
 		friend __global__ void add_particles(perfParticles_gevolution<part2, part_info2> * pcl, float * posdata, float * veldata, void * IDs, uint32_t count, unsigned long long int * buffer_idx);
@@ -607,6 +607,9 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 	long * d_npart;
 	int * d_npart_row;
 	unsigned long long int * d_buffer_count;
+	float * d_posdata;
+	float * d_veldata;
+	long * d_IDs;
 
 	posdata = (float *) malloc(3 * sizeof(float) * PCLBUFFER);
 	veldata = (float *) malloc(3 * sizeof(float) * PCLBUFFER);
@@ -649,6 +652,28 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 	cudaMemcpy(npart_row, d_npart_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyDeviceToHost);
 
 	nvtxRangePop();
+
+	long max_chunk_count = 0;
+	for (int row = 0; row < this->num_row_buffers_; )
+	{
+		long chunk_count = 0;
+		int chunk_rows = 0;
+		do
+		{
+			chunk_count += npart_row[row + chunk_rows];
+			chunk_rows++;
+		} while (chunk_count < PCLBUFFER && row + chunk_rows < this->num_row_buffers_);
+		max_chunk_count = std::max(max_chunk_count, chunk_count);
+		row += chunk_rows;
+	}
+
+	size_t output_workspace_bytes = DeviceWorkspace::aligned_bytes<float>(3 * max_chunk_count)
+	                              + DeviceWorkspace::aligned_bytes<float>(3 * max_chunk_count)
+	                              + DeviceWorkspace::aligned_bytes<long>(max_chunk_count);
+	DeviceWorkspace output_workspace(output_workspace_bytes, "Gadget-2 snapshot output", "particle staging buffers");
+	d_posdata = output_workspace.slice<float>(3 * max_chunk_count, "position staging buffer");
+	d_veldata = output_workspace.slice<float>(3 * max_chunk_count, "velocity staging buffer");
+	d_IDs = output_workspace.slice<long>(max_chunk_count, "ID staging buffer");
 
 	if (hdr.num_files == 1)
 	{	
@@ -730,7 +755,7 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 				//buffer_count = 0;
 				cudaMemset(d_buffer_count, 0, sizeof(unsigned long long int));
 
-				buffer_tracer_particles<<<row_count, 128>>>(this, tracer_factor, dtau_pos, dtau_vel, hdr.time, hdr.BoxSize, phi, posdata, veldata, IDs, row_start, d_buffer_count);
+				buffer_tracer_particles<<<row_count, 128>>>(this, tracer_factor, dtau_pos, dtau_vel, hdr.time, hdr.BoxSize, phi, d_posdata, d_veldata, d_IDs, row_start, d_buffer_count);
 
 				success = cudaDeviceSynchronize();
 
@@ -740,6 +765,9 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 				}
 
 				cudaMemcpy(&buffer_count, d_buffer_count, sizeof(unsigned long long int), cudaMemcpyDeviceToHost);
+				cudaMemcpy(posdata, d_posdata, 3 * buffer_count * sizeof(float), cudaMemcpyDeviceToHost);
+				cudaMemcpy(veldata, d_veldata, 3 * buffer_count * sizeof(float), cudaMemcpyDeviceToHost);
+				cudaMemcpy(IDs, d_IDs, buffer_count * sizeof(long), cudaMemcpyDeviceToHost);
 				nvtxRangePop();
 
 				nvtxRangePushA("write particles to disk");
@@ -842,7 +870,7 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 			//buffer_count = 0;
 			cudaMemset(d_buffer_count, 0, sizeof(unsigned long long int));
 
-			buffer_tracer_particles<<<row_count, 128>>>(this, tracer_factor, dtau_pos, dtau_vel, hdr.time, hdr.BoxSize, phi, posdata, veldata, IDs, row_start, d_buffer_count);
+			buffer_tracer_particles<<<row_count, 128>>>(this, tracer_factor, dtau_pos, dtau_vel, hdr.time, hdr.BoxSize, phi, d_posdata, d_veldata, d_IDs, row_start, d_buffer_count);
 
 			success = cudaDeviceSynchronize();
 
@@ -851,6 +879,9 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 				throw std::runtime_error("CUDA error in buffer_tracer_particles");
 			}
 			cudaMemcpy(&buffer_count, d_buffer_count, sizeof(unsigned long long int), cudaMemcpyDeviceToHost);
+			cudaMemcpy(posdata, d_posdata, 3 * buffer_count * sizeof(float), cudaMemcpyDeviceToHost);
+			cudaMemcpy(veldata, d_veldata, 3 * buffer_count * sizeof(float), cudaMemcpyDeviceToHost);
+			cudaMemcpy(IDs, d_IDs, buffer_count * sizeof(long), cudaMemcpyDeviceToHost);
 			nvtxRangePop();
 
 			nvtxRangePushA("write particles to disk");
@@ -1237,7 +1268,7 @@ void Particles_gevolution<part,part_info,part_dataType>::saveGadget2(string file
 
 // CUDA kernel to count particles to be written
 template <typename part, typename part_info>
-__global__ void count_tracer_particles(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, lightcone_geometry & lightcone, Real inner, Real outer, Real dtau_old, double vertex[MAX_INTERSECTS][3], int vertexcount, long * npart, int * npart_row, int * npart_checkID_row)
+__global__ void count_tracer_particles(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, lightcone_geometry lightcone, Real inner, Real outer, Real dtau_old, const double vertex[MAX_INTERSECTS][3], int vertexcount, long * npart, int * npart_row, int * npart_checkID_row)
 {
 	int row = blockIdx.x;
 	int thread_id = threadIdx.x;
@@ -1316,7 +1347,7 @@ __global__ void count_tracer_particles(perfParticles_gevolution<part, part_info>
 
 // CUDA kernel to write particle IDs to buffers
 template <typename part, typename part_info>
-__global__ void buffer_tracer_IDs(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, lightcone_geometry & lightcone, Real inner, Real outer, Real dtau_old, double vertex[MAX_INTERSECTS][3], int vertexcount, long * IDs, long row_offset, unsigned long long int * buffer_count)
+__global__ void buffer_tracer_IDs(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, lightcone_geometry lightcone, Real inner, Real outer, Real dtau_old, const double vertex[MAX_INTERSECTS][3], int vertexcount, long * IDs, long row_offset, unsigned long long int * buffer_count)
 {
 	int row = blockIdx.x + row_offset;
 	int thread_id = threadIdx.x;
@@ -1347,7 +1378,7 @@ __global__ void buffer_tracer_IDs(perfParticles_gevolution<part, part_info> * pc
 
 // CUDA kernel to write particles to buffers
 template <typename part, typename part_info, int IDlog_scatter>
-__global__ void buffer_tracer_particles(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, lightcone_geometry & lightcone, Real dist, Real inner, Real outer, double dtau, double dtau_old, double a, double dadtau, double boxsize, Real * domain, Field<Real> * phi, double vertex[MAX_INTERSECTS][3], int vertexcount, float * posdata, float * veldata, long * IDs, unsigned char * loginfo, long row_offset, unsigned long long int * buffer_count1, unsigned long long int * buffer_count2)
+__global__ void buffer_tracer_particles(perfParticles_gevolution<part, part_info> * pcl, int tracer_factor, lightcone_geometry lightcone, Real dist, Real inner, Real outer, double dtau, double dtau_old, double a, double dadtau, double boxsize, const Real * domain, Field<Real> * phi, const double vertex[MAX_INTERSECTS][3], int vertexcount, float * posdata, float * veldata, long * IDs, unsigned char * loginfo, long row_offset, unsigned long long int * buffer_count1, unsigned long long int * buffer_count2)
 {
 	int row = blockIdx.x + row_offset;
 	int thread_id = threadIdx.x;
@@ -1574,6 +1605,8 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 	unsigned long long int * d_buffer_count2;
 	int * d_npart_row;
 	int * d_npart_checkID_row;
+	double (* d_vertex)[3] = NULL;
+	Real * d_domain = NULL;
 	vector<LightconeParticleWriteChunk> particle_write_chunks;
 	long long local_particle_begin = 0;
 	long long local_particle_cursor = 0;
@@ -1618,26 +1651,29 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 
 	{
 		size_t count_workspace_bytes = 0;
-		count_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<long>(1);
-		count_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned long long int>(1);
-		count_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned long long int>(1);
-		count_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<int>(this->num_row_buffers_);
-		count_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<int>(this->num_row_buffers_);
+		count_workspace_bytes += DeviceWorkspace::aligned_bytes<long>(1);
+		count_workspace_bytes += DeviceWorkspace::aligned_bytes<unsigned long long int>(1);
+		count_workspace_bytes += DeviceWorkspace::aligned_bytes<unsigned long long int>(1);
+		count_workspace_bytes += DeviceWorkspace::aligned_bytes<int>(this->num_row_buffers_);
+		count_workspace_bytes += DeviceWorkspace::aligned_bytes<int>(this->num_row_buffers_);
+		count_workspace_bytes += DeviceWorkspace::aligned_bytes<double>(MAX_INTERSECTS * 3);
 
-		LightconeDeviceWorkspace count_workspace(count_workspace_bytes, "particle light-cone counting", "counting workspace");
+		DeviceWorkspace count_workspace(count_workspace_bytes, "particle light-cone counting", "counting workspace");
 
 		d_npart = count_workspace.slice<long>(1, "particle count scalar");
 		d_buffer_count1 = count_workspace.slice<unsigned long long int>(1, "check-zone buffer counter");
 		d_buffer_count2 = count_workspace.slice<unsigned long long int>(1, "particle buffer counter");
 		d_npart_row = count_workspace.slice<int>(this->num_row_buffers_, "per-row particle counts");
 		d_npart_checkID_row = count_workspace.slice<int>(this->num_row_buffers_, "per-row check-zone particle counts");
+		d_vertex = (double (*)[3]) count_workspace.slice<double>(MAX_INTERSECTS * 3, "light-cone intersection vertices");
 
 		cudaMemcpy(d_npart, &npart, sizeof(long), cudaMemcpyHostToDevice);
 		cudaMemcpy(d_npart_row, npart_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyHostToDevice);
 		cudaMemcpy(d_npart_checkID_row, npart_checkID_row, sizeof(int) * this->num_row_buffers_, cudaMemcpyHostToDevice);
+		cudaMemcpy(d_vertex, vertex, sizeof(double) * MAX_INTERSECTS * 3, cudaMemcpyHostToDevice);
 
 		// count particles
-		count_tracer_particles<part, part_info><<<this->num_row_buffers_, 128>>>(this, tracer_factor, lightcone, inner, outer, dtau_old, vertex, vertexcount, d_npart, d_npart_row, d_npart_checkID_row);
+		count_tracer_particles<part, part_info><<<this->num_row_buffers_, 128>>>(this, tracer_factor, lightcone, inner, outer, dtau_old, d_vertex, vertexcount, d_npart, d_npart_row, d_npart_checkID_row);
 
 		success = cudaDeviceSynchronize();
 
@@ -1695,33 +1731,35 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 		cub::DeviceSelect::Flagged((void *) NULL, select_temp_bytes, (unsigned long long int *) NULL, (unsigned char *) NULL, (unsigned long long int *) NULL, (unsigned long long int *) NULL, max_buffer_count);
 	}
 
-	size_t persistent_workspace_bytes = LightconeDeviceWorkspace::aligned_bytes<long>(backlog_count);
+	size_t persistent_workspace_bytes = DeviceWorkspace::aligned_bytes<long>(backlog_count)
+	                                  + DeviceWorkspace::aligned_bytes<double>(MAX_INTERSECTS * 3)
+	                                  + DeviceWorkspace::aligned_bytes<Real>(4);
 	size_t check_phase_workspace_bytes = 0;
 	size_t buffer_phase_workspace_bytes = 0;
 
-	check_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned long long int>(1);
-	check_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<long>(max_check_count);
-	check_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned long long int>(1);
+	check_phase_workspace_bytes += DeviceWorkspace::aligned_bytes<unsigned long long int>(1);
+	check_phase_workspace_bytes += DeviceWorkspace::aligned_bytes<long>(max_check_count);
+	check_phase_workspace_bytes += DeviceWorkspace::aligned_bytes<unsigned long long int>(1);
 
-	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned long long int>(1);
-	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned long long int>(1);
-	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<float>(3 * max_buffer_count);
-	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<float>(3 * max_buffer_count);
-	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<long>(max_buffer_count);
-	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned char>(max_buffer_count);
-	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned char>(max_buffer_count);
-	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned long long int>(max_buffer_count);
-	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned long long int>(max_buffer_count);
-	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned long long int>(1);
-	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<float>(3 * max_buffer_count);
-	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<float>(3 * max_buffer_count);
-	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<long>(max_buffer_count);
-	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned char>(max_buffer_count);
-	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned long long int>(9);
-	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned long long int>(9);
-	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<unsigned long long int>(9);
-	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<long>(max_buffer_count);
-	buffer_phase_workspace_bytes += LightconeDeviceWorkspace::align_up(select_temp_bytes);
+	buffer_phase_workspace_bytes += DeviceWorkspace::aligned_bytes<unsigned long long int>(1);
+	buffer_phase_workspace_bytes += DeviceWorkspace::aligned_bytes<unsigned long long int>(1);
+	buffer_phase_workspace_bytes += DeviceWorkspace::aligned_bytes<float>(3 * max_buffer_count);
+	buffer_phase_workspace_bytes += DeviceWorkspace::aligned_bytes<float>(3 * max_buffer_count);
+	buffer_phase_workspace_bytes += DeviceWorkspace::aligned_bytes<long>(max_buffer_count);
+	buffer_phase_workspace_bytes += DeviceWorkspace::aligned_bytes<unsigned char>(max_buffer_count);
+	buffer_phase_workspace_bytes += DeviceWorkspace::aligned_bytes<unsigned char>(max_buffer_count);
+	buffer_phase_workspace_bytes += DeviceWorkspace::aligned_bytes<unsigned long long int>(max_buffer_count);
+	buffer_phase_workspace_bytes += DeviceWorkspace::aligned_bytes<unsigned long long int>(max_buffer_count);
+	buffer_phase_workspace_bytes += DeviceWorkspace::aligned_bytes<unsigned long long int>(1);
+	buffer_phase_workspace_bytes += DeviceWorkspace::aligned_bytes<float>(3 * max_buffer_count);
+	buffer_phase_workspace_bytes += DeviceWorkspace::aligned_bytes<float>(3 * max_buffer_count);
+	buffer_phase_workspace_bytes += DeviceWorkspace::aligned_bytes<long>(max_buffer_count);
+	buffer_phase_workspace_bytes += DeviceWorkspace::aligned_bytes<unsigned char>(max_buffer_count);
+	buffer_phase_workspace_bytes += DeviceWorkspace::aligned_bytes<unsigned long long int>(9);
+	buffer_phase_workspace_bytes += DeviceWorkspace::aligned_bytes<unsigned long long int>(9);
+	buffer_phase_workspace_bytes += DeviceWorkspace::aligned_bytes<unsigned long long int>(9);
+	buffer_phase_workspace_bytes += DeviceWorkspace::aligned_bytes<long>(max_buffer_count);
+	buffer_phase_workspace_bytes += DeviceWorkspace::align_up(select_temp_bytes);
 
 #ifdef DEBUG_DEVICE_WORKSPACE
 	if (parallel.rank() == 0)
@@ -1739,13 +1777,17 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 	}
 #endif
 
-	LightconeDeviceWorkspace function_workspace(persistent_workspace_bytes + std::max(check_phase_workspace_bytes, buffer_phase_workspace_bytes), "particle light-cone buffers", "temporary buffer workspace");
+	DeviceWorkspace function_workspace(persistent_workspace_bytes + std::max(check_phase_workspace_bytes, buffer_phase_workspace_bytes), "particle light-cone buffers", "temporary buffer workspace");
 
 	if (backlog_count > 0)
 	{
 		d_IDbacklog = function_workspace.slice<long>(backlog_count, "device ID backlog");
 		cudaMemcpy(d_IDbacklog, IDbacklog.data(), sizeof(long) * backlog_count, cudaMemcpyHostToDevice);
 	}
+	d_vertex = (double (*)[3]) function_workspace.slice<double>(MAX_INTERSECTS * 3, "light-cone intersection vertices");
+	d_domain = function_workspace.slice<Real>(4, "light-cone local domain");
+	cudaMemcpy(d_vertex, vertex, sizeof(double) * MAX_INTERSECTS * 3, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_domain, domain, sizeof(Real) * 4, cudaMemcpyHostToDevice);
 
 	size_t persistent_workspace_mark = function_workspace.mark();
 
@@ -1771,7 +1813,7 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 			//buffer_count1 = 0;
 			cudaMemset(d_buffer_count1, 0, sizeof(unsigned long long int));
 
-			buffer_tracer_IDs<part, part_info><<<row_count, 128>>>(this, tracer_factor, lightcone, inner, outer, dtau_old, vertex, vertexcount, d_IDs, row_start, d_buffer_count1);
+			buffer_tracer_IDs<part, part_info><<<row_count, 128>>>(this, tracer_factor, lightcone, inner, outer, dtau_old, d_vertex, vertexcount, d_IDs, row_start, d_buffer_count1);
 
 			success = cudaDeviceSynchronize();
 
@@ -2012,7 +2054,7 @@ void perfParticles_gevolution<part,part_info>::saveGadget2(string filename, gadg
 				cudaMemset(d_buffer_count1, 0, sizeof(unsigned long long int));
 				cudaMemcpy(d_buffer_count2, &buffer_count2, sizeof(unsigned long long int), cudaMemcpyHostToDevice);
 
-				buffer_tracer_particles<part, part_info, IDlog_scatter><<<row_count, 128>>>(this, tracer_factor, lightcone, (Real) dist, inner, outer, dtau, dtau_old, (double) hdr.time, dadtau, hdr.BoxSize, domain, phi, vertex, vertexcount, d_posdata, d_veldata, d_IDs, d_loginfo, row_start, d_buffer_count1, d_buffer_count2);
+				buffer_tracer_particles<part, part_info, IDlog_scatter><<<row_count, 128>>>(this, tracer_factor, lightcone, (Real) dist, inner, outer, dtau, dtau_old, (double) hdr.time, dadtau, hdr.BoxSize, d_domain, phi, d_vertex, vertexcount, d_posdata, d_veldata, d_IDs, d_loginfo, row_start, d_buffer_count1, d_buffer_count2);
 
 				success = cudaDeviceSynchronize();
 
@@ -2432,8 +2474,15 @@ void perfParticles_gevolution<part,part_info>::loadGadget2(string filename, gadg
 	IDs = malloc(sizeof(int32_t) * PCLBUFFER);
 #endif
 
-	unsigned long long int * d_buffer_idx;
-	cudaMalloc((void **) &d_buffer_idx, sizeof(unsigned long long int));
+	size_t reader_workspace_bytes = DeviceWorkspace::aligned_bytes<float>(3 * PCLBUFFER)
+	                              + DeviceWorkspace::aligned_bytes<float>(3 * PCLBUFFER)
+	                              + DeviceWorkspace::align_up(sizeof(int64_t) * PCLBUFFER)
+	                              + DeviceWorkspace::aligned_bytes<unsigned long long int>(1);
+	DeviceWorkspace reader_workspace(reader_workspace_bytes, "Gadget-2 particle input", "particle staging buffers");
+	float * d_posdata = reader_workspace.slice<float>(3 * PCLBUFFER, "position staging buffer");
+	float * d_veldata = reader_workspace.slice<float>(3 * PCLBUFFER, "velocity staging buffer");
+	void * d_IDs = reader_workspace.slice_bytes(sizeof(int64_t) * PCLBUFFER, 256, "ID staging buffer");
+	unsigned long long int * d_buffer_idx = reader_workspace.slice<unsigned long long int>(1, "particle insertion counter");
 
 	MPI_File_open(parallel.lat_world_comm(), filename.c_str(), MPI_MODE_RDONLY, MPI_INFO_NULL, &infile);
 
@@ -2557,8 +2606,15 @@ void perfParticles_gevolution<part,part_info>::loadGadget2(string filename, gadg
 		{
 			unsigned long long int buffer_idx = this->num_particles_;
 			cudaMemcpy(d_buffer_idx, &buffer_idx, sizeof(unsigned long long int), cudaMemcpyHostToDevice);
+			cudaMemcpy(d_posdata, posdata, 3 * count * sizeof(float), cudaMemcpyHostToDevice);
+			cudaMemcpy(d_veldata, veldata, 3 * count * sizeof(float), cudaMemcpyHostToDevice);
+#if GADGET_ID_BYTES == 8
+			cudaMemcpy(d_IDs, IDs, count * sizeof(int64_t), cudaMemcpyHostToDevice);
+#else
+			cudaMemcpy(d_IDs, IDs, count * sizeof(int32_t), cudaMemcpyHostToDevice);
+#endif
 			
-			add_particles<part, part_info><<<count/128+1, 128>>>(this, posdata, veldata, IDs, count, d_buffer_idx);
+			add_particles<part, part_info><<<count/128+1, 128>>>(this, d_posdata, d_veldata, d_IDs, count, d_buffer_idx);
 
 			auto success = cudaDeviceSynchronize();
 
@@ -2583,7 +2639,6 @@ void perfParticles_gevolution<part,part_info>::loadGadget2(string filename, gadg
 	free(posdata);
 	free(veldata);
 	free(IDs);
-	cudaFree(d_buffer_idx);
 }
 
 template <typename part, typename part_info>
@@ -2869,8 +2924,15 @@ void perfParticles_gevolution<part,part_info>::loadGadget2_express(string filena
 	IDs = malloc(sizeof(int32_t) * PCLBUFFER);
 #endif
 
-	unsigned long long int * d_buffer_idx;
-	cudaMalloc((void **) &d_buffer_idx, sizeof(unsigned long long int));
+	size_t reader_workspace_bytes = DeviceWorkspace::aligned_bytes<float>(3 * PCLBUFFER)
+	                              + DeviceWorkspace::aligned_bytes<float>(3 * PCLBUFFER)
+	                              + DeviceWorkspace::align_up(sizeof(int64_t) * PCLBUFFER)
+	                              + DeviceWorkspace::aligned_bytes<unsigned long long int>(1);
+	DeviceWorkspace reader_workspace(reader_workspace_bytes, "legacy express Gadget-2 particle input", "particle staging buffers");
+	float * d_posdata = reader_workspace.slice<float>(3 * PCLBUFFER, "position staging buffer");
+	float * d_veldata = reader_workspace.slice<float>(3 * PCLBUFFER, "velocity staging buffer");
+	void * d_IDs = reader_workspace.slice_bytes(sizeof(int64_t) * PCLBUFFER, 256, "ID staging buffer");
+	unsigned long long int * d_buffer_idx = reader_workspace.slice<unsigned long long int>(1, "particle insertion counter");
 
 	filename = filename.substr(0, filename.find_last_of('.')+1) + to_string(parallel.rank());
 
@@ -2967,8 +3029,15 @@ void perfParticles_gevolution<part,part_info>::loadGadget2_express(string filena
 
 		unsigned long long int buffer_idx = this->num_particles_;
 		cudaMemcpy(d_buffer_idx, &buffer_idx, sizeof(unsigned long long int), cudaMemcpyHostToDevice);
+		cudaMemcpy(d_posdata, posdata, 3 * count * sizeof(float), cudaMemcpyHostToDevice);
+		cudaMemcpy(d_veldata, veldata, 3 * count * sizeof(float), cudaMemcpyHostToDevice);
+#if GADGET_ID_BYTES == 8
+		cudaMemcpy(d_IDs, IDs, count * sizeof(int64_t), cudaMemcpyHostToDevice);
+#else
+		cudaMemcpy(d_IDs, IDs, count * sizeof(int32_t), cudaMemcpyHostToDevice);
+#endif
 
-		add_particles<part, part_info><<<count/128+1, 128>>>(this, posdata, veldata, IDs, count, d_buffer_idx);
+		add_particles<part, part_info><<<count/128+1, 128>>>(this, d_posdata, d_veldata, d_IDs, count, d_buffer_idx);
 
 		auto success = cudaDeviceSynchronize();
 
@@ -2991,7 +3060,6 @@ void perfParticles_gevolution<part,part_info>::loadGadget2_express(string filena
 	free(posdata);
 	free(veldata);
 	free(IDs);
-	cudaFree(d_buffer_idx);
 }
 
 #endif

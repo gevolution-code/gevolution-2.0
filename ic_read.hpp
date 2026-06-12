@@ -13,6 +13,7 @@
 #ifndef IC_READ_HEADER
 #define IC_READ_HEADER
 
+#include "cuda_staging.hpp"
 //////////////////////////
 // readIC
 //////////////////////////
@@ -172,6 +173,7 @@ void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fou
 		a = 1. / (1. + ic.z_ic);
 
 	f_params[0] = a;
+	DeviceStagingBuffer<double> d_f_params(f_params, 7);
 	
 	strcpy(pcls_cdm_info.type_name, "part_simple");
 	pcls_cdm_info.mass = 0.;
@@ -279,7 +281,7 @@ void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fou
 	}
 	
 	COUT << " " << sim.numpcl[0] << " cdm particles read successfully." << endl;
-	maxvel[0] = pcls_cdm->updateVel(update_q_functor(), 0., &phi, 1, f_params);
+	maxvel[0] = pcls_cdm->updateVel(update_q_functor(), 0., &phi, 1, d_f_params.data());
 
 	COUT << " max. |q|/(m a) for cdm particles after IC read: " << maxvel[0] << endl;
 
@@ -336,7 +338,7 @@ void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fou
 		}
 		
 		COUT << " " << sim.numpcl[1] << " baryon particles read successfully." << endl;
-		maxvel[1] = pcls_b->updateVel(update_q_functor(), 0., &phi, 1, f_params);
+		maxvel[1] = pcls_b->updateVel(update_q_functor(), 0., &phi, 1, d_f_params.data());
 	}
 	else
 		sim.baryon_flag = 0;

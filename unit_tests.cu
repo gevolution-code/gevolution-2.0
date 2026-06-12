@@ -7,6 +7,7 @@
 #include <chrono>
 #include <omp.h>
 #include "LATfield2.hpp"
+#include "cuda_staging.hpp"
 #include "particles/LATfield2_Particles.hpp"
 #include "particles/LATfield2_perfParticles.hpp"
 #include "metadata.hpp"
@@ -169,21 +170,25 @@ int main(int argc, char **argv)
     }
 
     // create a lattice with size Ngrid^3
-    Lattice lat(3, Ngrid, 2);
+    ManagedCudaObject<Lattice> lat_storage(3, Ngrid, 2);
+    Lattice & lat = lat_storage.get();
 
     // create two particle handlers using the two implementations
     Particles_gevolution<part_simple, part_simple_info, part_simple_dataType> particles_old;
-    perfParticles_gevolution<part_simple, part_simple_info> particles_new;
+    ManagedCudaObject<perfParticles_gevolution<part_simple, part_simple_info>> particles_new_storage;
+    perfParticles_gevolution<part_simple, part_simple_info> & particles_new = particles_new_storage.get();
     part_simple_info pcl_info;
     part_simple_dataType pcl_dataType;
     Real boxSize[3] = {1.0, 1.0, 1.0};
 
     // create two fields for the CIC projection
     Field<Real> density_old;
-    Field<Real> density_new;
+    ManagedCudaObject<Field<Real>> density_new_storage;
+    Field<Real> & density_new = density_new_storage.get();
 
     // create a field for an external force potential
-    Field<Real> potential;
+    ManagedCudaObject<Field<Real>> potential_storage;
+    Field<Real> & potential = potential_storage.get();
 
     // initialize the fields and particle handlers
     density_old.initialize(lat, 1);
@@ -191,8 +196,8 @@ int main(int argc, char **argv)
     potential.initialize(lat, 1);
 
     density_old.alloc();
-    density_new.alloc();
-    potential.alloc();
+    density_new.alloc(-1, Field<Real>::managed);
+    potential.alloc(-1, Field<Real>::managed);
 
     strcpy(pcl_info.type_name, "part_simple");
     pcl_info.mass = 1.0;
@@ -472,7 +477,8 @@ int main(int argc, char **argv)
 
     COUT << " ...using the new implementation" << endl;
 
-    perfParticles_gevolution<part_simple, part_simple_info> particles_new_read;
+    ManagedCudaObject<perfParticles_gevolution<part_simple, part_simple_info>> particles_new_read_storage;
+    perfParticles_gevolution<part_simple, part_simple_info> & particles_new_read = particles_new_read_storage.get();
     particles_new_read.initialize(pcl_info, &lat, boxSize, (uint64_t) (Npcl / n / m), 1024);
 
     nvtxRangePushA("test of new Gadget2 input");
@@ -530,7 +536,8 @@ int main(int argc, char **argv)
 
     particles_new.sampleParticles(pos_ref.data(), vel_ref.data(), id_ref.data(), local_npart);
 
-    perfParticles_gevolution<part_simple, part_simple_info> particles_express_read;
+    ManagedCudaObject<perfParticles_gevolution<part_simple, part_simple_info>> particles_express_read_storage;
+    perfParticles_gevolution<part_simple, part_simple_info> & particles_express_read = particles_express_read_storage.get();
     particles_express_read.initialize(pcl_info, &lat, boxSize, (uint64_t) (Npcl / n / m), 1024);
 
     nvtxRangePushA("test of express input");
@@ -586,7 +593,8 @@ int main(int argc, char **argv)
     bool rejected_bad_layout = false;
     try
     {
-        perfParticles_gevolution<part_simple, part_simple_info> particles_bad_read;
+        ManagedCudaObject<perfParticles_gevolution<part_simple, part_simple_info>> particles_bad_read_storage;
+        perfParticles_gevolution<part_simple, part_simple_info> & particles_bad_read = particles_bad_read_storage.get();
         particles_bad_read.initialize(pcl_info, &lat, boxSize, 1024, 1024);
         particles_bad_read.loadExpress("test_output_express_bad", hdr);
     }

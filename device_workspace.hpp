@@ -1,9 +1,9 @@
 //////////////////////////
-// lightcone_device_workspace.hpp
+// device_workspace.hpp
 //////////////////////////
 
-#ifndef LIGHTCONE_DEVICE_WORKSPACE_HEADER
-#define LIGHTCONE_DEVICE_WORKSPACE_HEADER
+#ifndef DEVICE_WORKSPACE_HEADER
+#define DEVICE_WORKSPACE_HEADER
 
 #include <cub/cub.cuh>
 #include <iostream>
@@ -11,10 +11,10 @@
 #include <stdint.h>
 #include <stdexcept>
 
-class LightconeDeviceWorkspace
+class DeviceWorkspace
 {
 public:
-	LightconeDeviceWorkspace(size_t bytes, const char * context, const char * buffer_class)
+	DeviceWorkspace(size_t bytes, const char * context, const char * buffer_class)
 		: base_(NULL), offset_(0), bytes_(bytes), private_alloc_(false)
 		, context_(context), buffer_class_(buffer_class)
 	{
@@ -38,19 +38,19 @@ public:
 
 		if (!warned)
 		{
-			std::cout << COLORTEXT_YELLOW << " /!\\ warning" << COLORTEXT_RESET << ": proc#" << parallel.rank() << " particle light-cone " << buffer_class << " exceeds LATfield2 shared device workspace (" << bytes_ << " bytes required); using private device allocation." << std::endl;
+			std::cout << COLORTEXT_YELLOW << " /!\\ warning" << COLORTEXT_RESET << ": proc#" << parallel.rank() << " " << context_ << " " << buffer_class << " exceeds LATfield2 shared device workspace (" << bytes_ << " bytes required); using private device allocation." << std::endl;
 			warned = true;
 		}
 	}
 
-	~LightconeDeviceWorkspace()
+	~DeviceWorkspace()
 	{
 		if (private_alloc_ && base_ != NULL)
 			cudaFree(base_);
 	}
 
-	LightconeDeviceWorkspace(const LightconeDeviceWorkspace &) = delete;
-	LightconeDeviceWorkspace & operator=(const LightconeDeviceWorkspace &) = delete;
+	DeviceWorkspace(const DeviceWorkspace &) = delete;
+	DeviceWorkspace & operator=(const DeviceWorkspace &) = delete;
 
 	size_t mark() const
 	{
@@ -79,7 +79,7 @@ public:
 		{
 			std::cerr << COLORTEXT_RED << " error" << COLORTEXT_RESET
 			          << ": proc#" << parallel.rank()
-			          << " Lightcone device workspace exhausted";
+			          << " device workspace exhausted";
 
 			if (label != NULL)
 				std::cerr << " while allocating " << label;
@@ -99,7 +99,7 @@ public:
 
 			std::cerr << std::endl;
 
-			throw std::runtime_error("Lightcone device workspace exhausted");
+			throw std::runtime_error("Device workspace exhausted");
 		}
 
 		offset_ = aligned_offset;
@@ -134,7 +134,7 @@ private:
 	const char * buffer_class_;
 };
 
-inline void lightcone_device_radix_sort_host_ids(long * ids, size_t count, const char * context)
+inline void device_radix_sort_host_ids(long * ids, size_t count, const char * context)
 {
 	if (count < 2)
 		return;
@@ -145,11 +145,11 @@ inline void lightcone_device_radix_sort_host_ids(long * ids, size_t count, const
 
 	size_t workspace_bytes = 0;
 
-	workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<long>(count);
-	workspace_bytes += LightconeDeviceWorkspace::aligned_bytes<long>(count);
-	workspace_bytes += LightconeDeviceWorkspace::align_up(sort_temp_bytes);
+	workspace_bytes += DeviceWorkspace::aligned_bytes<long>(count);
+	workspace_bytes += DeviceWorkspace::aligned_bytes<long>(count);
+	workspace_bytes += DeviceWorkspace::align_up(sort_temp_bytes);
 
-	LightconeDeviceWorkspace workspace(workspace_bytes, context, "ID backlog radix sort workspace");
+	DeviceWorkspace workspace(workspace_bytes, context, "ID backlog radix sort workspace");
 
 	long * d_in = workspace.slice<long>(count, "radix-sort input IDs");
 	long * d_out = workspace.slice<long>(count, "radix-sort output IDs");

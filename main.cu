@@ -49,6 +49,7 @@
 #undef MIN
 #endif
 #include "LATfield2.hpp"
+#include "cuda_staging.hpp"
 #include "metadata.hpp"
 #include "class_tools.hpp"
 #include "tools.hpp"
@@ -266,12 +267,15 @@ int main(int argc, char **argv)
 	box[1] = sim.numpts;
 	box[2] = sim.numpts;
 	
-	Lattice lat(3,box,GRADIENT_ORDER);
+	ManagedCudaObject<Lattice> lat_storage(3,box,GRADIENT_ORDER);
+	Lattice & lat = lat_storage.get();
 	Lattice latFT;
 	latFT.initializeRealFFT(lat,0);
 	
-	perfParticles_gevolution<part_simple,part_simple_info> pcls_cdm;
-	perfParticles_gevolution<part_simple,part_simple_info> pcls_b;
+	ManagedCudaObject<perfParticles_gevolution<part_simple,part_simple_info>> pcls_cdm_storage;
+	ManagedCudaObject<perfParticles_gevolution<part_simple,part_simple_info>> pcls_b_storage;
+	perfParticles_gevolution<part_simple,part_simple_info> & pcls_cdm = pcls_cdm_storage.get();
+	perfParticles_gevolution<part_simple,part_simple_info> & pcls_b = pcls_b_storage.get();
 	Particles_gevolution<part_simple,part_simple_info,part_simple_dataType> * pcls_ncdm = nullptr;
 	if (cosmo.num_ncdm > 0) pcls_ncdm = new Particles_gevolution<part_simple,part_simple_info,part_simple_dataType>[cosmo.num_ncdm];
 
@@ -281,17 +285,23 @@ int main(int argc, char **argv)
 	Field<Real> * project_Tij_fields[2];
 	Field<Real> * project_T0i_fields[2];
 	double f_params[7] = {0., 0., 0., 0., 0., 0., 0.};
+	DeviceStagingBuffer<double> d_f_params(7);
 	LightconeIDBacklog ** IDbacklog;
 
 	IDbacklog = new LightconeIDBacklog * [sim.num_IDlogs];
 	for (int i = 0; i < sim.num_IDlogs; i++)
 		IDbacklog[i] = new LightconeIDBacklog [MAX_PCL_SPECIES];
 
-	Field<Real> phi;
-	Field<Real> source;
-	Field<Real> chi;
-	Field<Real> Sij;
-	Field<Real> Bi;
+	ManagedCudaObject<Field<Real>> phi_storage;
+	ManagedCudaObject<Field<Real>> source_storage;
+	ManagedCudaObject<Field<Real>> chi_storage;
+	ManagedCudaObject<Field<Real>> Sij_storage;
+	ManagedCudaObject<Field<Real>> Bi_storage;
+	Field<Real> & phi = phi_storage.get();
+	Field<Real> & source = source_storage.get();
+	Field<Real> & chi = chi_storage.get();
+	Field<Real> & Sij = Sij_storage.get();
+	Field<Real> & Bi = Bi_storage.get();
 	Field<Cplx> scalarFT;
 	Field<Cplx> SijFT;
 	Field<Cplx> BiFT;
@@ -316,7 +326,8 @@ int main(int argc, char **argv)
 	PlanFFT<Cplx> plan_Bi(&Bi, &BiFT);
 	plan_Bi.setExecutionMode(FFT_EXECUTION_CUDA_AWARE_MPI);
 #ifdef CHECK_B
-	Field<Real> Bi_check;
+	ManagedCudaObject<Field<Real>> Bi_check_storage;
+	Field<Real> & Bi_check = Bi_check_storage.get();
 	Field<Cplx> BiFT_check;
 	Bi_check.initialize(lat,3);
 	BiFT_check.initialize(latFT,3);
@@ -324,7 +335,8 @@ int main(int argc, char **argv)
 	plan_Bi_check.setExecutionMode(FFT_EXECUTION_CUDA_AWARE_MPI);
 #endif
 #ifdef VELOCITY
-	Field<Real> vi;
+	ManagedCudaObject<Field<Real>> vi_storage;
+	Field<Real> & vi = vi_storage.get();
 	Field<Cplx> viFT;
 	vi.initialize(lat,3);
 	viFT.initialize(latFT,3);
@@ -594,8 +606,10 @@ int main(int argc, char **argv)
 			if (tmp > 0)
 			{
 				Field<Real> * fieldptr = &source;
+				DeviceStagingBuffer<Field<Real> *> d_fieldptr(&fieldptr, 1);
+				DeviceStagingBuffer<double> d_tmp(&tmp, 1);
 
-				lattice_for_each<<<dim3(source.lattice().sizeLocal(1), source.lattice().sizeLocal(2)), 128>>>(lattice_add_functor(), sim.numpts, &fieldptr, 1, &tmp, nullptr, nullptr);
+				lattice_for_each<<<dim3(source.lattice().sizeLocal(1), source.lattice().sizeLocal(2)), 128>>>(lattice_add_functor(), sim.numpts, d_fieldptr.data(), 1, d_tmp.data(), nullptr, nullptr);
 
 				cudaDeviceSynchronize();
 			}
@@ -702,9 +716,10 @@ int main(int argc, char **argv)
 			nvtxRangePushA("offload Tij projection to GPU");
 			f_params[0] = a;
 			f_params[1] = 1.;
-			projection_Tij_project_Async(&pcls_cdm, project_Tij_fields, 2, f_params);
+			d_f_params.copy_from_host(f_params, 7);
+			projection_Tij_project_Async(&pcls_cdm, project_Tij_fields, 2, d_f_params.data());
 			if (sim.baryon_flag)
-				projection_Tij_project_Async(&pcls_b, project_Tij_fields, 2, f_params);
+				projection_Tij_project_Async(&pcls_b, project_Tij_fields, 2, d_f_params.data());
 			nvtxRangePop();
 		}
 		
@@ -803,9 +818,10 @@ int main(int argc, char **argv)
 				//projection_T0i_comm(&Bi);
 				nvtxRangePushA("offload T0i projection to GPU");
 				f_params[0] = 1.;
-				projection_T0i_project_Async(&pcls_cdm, project_T0i_fields, 2, f_params);
+				d_f_params.copy_from_host(f_params, 1);
+				projection_T0i_project_Async(&pcls_cdm, project_T0i_fields, 2, d_f_params.data());
 				if (sim.baryon_flag)
-					projection_T0i_project_Async(&pcls_b, project_T0i_fields, 2, f_params);
+					projection_T0i_project_Async(&pcls_b, project_T0i_fields, 2, d_f_params.data());
 				nvtxRangePop();
 			}
 
@@ -1167,17 +1183,18 @@ int main(int argc, char **argv)
 		nvtxRangePushA("Particle update: cdm and baryons, kick step");
 		f_params[0] = a;
 		f_params[1] = a * a * sim.numpts;
+		d_f_params.copy_from_host(f_params, 7);
 		if (sim.gr_flag > 0)
 		{
-			maxvel[0] = pcls_cdm.updateVel(update_q_functor(), (dtau + dtau_old) / 2., update_cdm_fields, (1. / a < ic.z_relax + 1. ? 3 : 2), f_params);
+			maxvel[0] = pcls_cdm.updateVel(update_q_functor(), (dtau + dtau_old) / 2., update_cdm_fields, (1. / a < ic.z_relax + 1. ? 3 : 2), d_f_params.data());
 			if (sim.baryon_flag)
-				maxvel[1] = pcls_b.updateVel(update_q_functor(), (dtau + dtau_old) / 2., update_b_fields, (1. / a < ic.z_relax + 1. ? 3 : 2), f_params);
+				maxvel[1] = pcls_b.updateVel(update_q_functor(), (dtau + dtau_old) / 2., update_b_fields, (1. / a < ic.z_relax + 1. ? 3 : 2), d_f_params.data());
 		}
 		else
 		{
-			maxvel[0] = pcls_cdm.updateVel(update_q_Newton_functor(), (dtau + dtau_old) / 2., update_cdm_fields, ((sim.radiation_flag + sim.fluid_flag > 0 && a < 1. / (sim.z_switch_linearchi + 1.)) ? 2 : 1), f_params);
+			maxvel[0] = pcls_cdm.updateVel(update_q_Newton_functor(), (dtau + dtau_old) / 2., update_cdm_fields, ((sim.radiation_flag + sim.fluid_flag > 0 && a < 1. / (sim.z_switch_linearchi + 1.)) ? 2 : 1), d_f_params.data());
 			if (sim.baryon_flag)
-				maxvel[1] = pcls_b.updateVel(update_q_Newton_functor(), (dtau + dtau_old) / 2., update_b_fields, ((sim.radiation_flag + sim.fluid_flag > 0 && a < 1. / (sim.z_switch_linearchi + 1.)) ? 2 : 1), f_params);
+				maxvel[1] = pcls_b.updateVel(update_q_Newton_functor(), (dtau + dtau_old) / 2., update_b_fields, ((sim.radiation_flag + sim.fluid_flag > 0 && a < 1. / (sim.z_switch_linearchi + 1.)) ? 2 : 1), d_f_params.data());
 		}
 		nvtxRangePop();
 
@@ -1192,17 +1209,18 @@ int main(int argc, char **argv)
 		nvtxRangePushA("Particle update: cdm and baryons, drift step");
 		f_params[0] = a;
 		f_params[1] = a * a * sim.numpts;
+		d_f_params.copy_from_host(f_params, 7);
 		if (sim.gr_flag > 0)
 		{
-			pcls_cdm.moveParticles(update_pos_functor(), dtau, update_cdm_fields, (1. / a < ic.z_relax + 1. ? 3 : 0), f_params);
+			pcls_cdm.moveParticles(update_pos_functor(), dtau, update_cdm_fields, (1. / a < ic.z_relax + 1. ? 3 : 0), d_f_params.data());
 			if (sim.baryon_flag)
-				pcls_b.moveParticles(update_pos_functor(), dtau, update_b_fields, (1. / a < ic.z_relax + 1. ? 3 : 0), f_params);
+				pcls_b.moveParticles(update_pos_functor(), dtau, update_b_fields, (1. / a < ic.z_relax + 1. ? 3 : 0), d_f_params.data());
 		}
 		else
 		{
-			pcls_cdm.moveParticles(update_pos_Newton_functor(), dtau, NULL, 0, f_params);
+			pcls_cdm.moveParticles(update_pos_Newton_functor(), dtau, NULL, 0, d_f_params.data());
 			if (sim.baryon_flag)
-				pcls_b.moveParticles(update_pos_Newton_functor(), dtau, NULL, 0, f_params);
+				pcls_b.moveParticles(update_pos_Newton_functor(), dtau, NULL, 0, d_f_params.data());
 		}
 		nvtxRangePop();
 

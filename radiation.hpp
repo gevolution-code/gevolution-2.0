@@ -13,6 +13,7 @@
 #ifndef RADIATION_HEADER
 #define RADIATION_HEADER
 
+#include "cuda_staging.hpp"
 #ifdef HAVE_CLASS
 
 //////////////////////////
@@ -226,12 +227,13 @@ void projection_T00_project(background & class_background, perturbs & class_pert
 		free(k);
 
 		Field<Real> * fieldptr = &source;
+		DeviceStagingBuffer<Field<Real> *> d_fieldptr(&fieldptr, 1);
 		double * d_params;
 
 		cudaMalloc(&d_params, sizeof(double));
 		cudaMemcpy(d_params, &Omega_ncdm, sizeof(double), cudaMemcpyDefault);
 
-		lattice_for_each<<<dim3(source.lattice().sizeLocal(1), source.lattice().sizeLocal(2)), 128>>>(lattice_add_functor(), sim.numpts, &fieldptr, 1, d_params, nullptr, nullptr);
+		lattice_for_each<<<dim3(source.lattice().sizeLocal(1), source.lattice().sizeLocal(2)), 128>>>(lattice_add_functor(), sim.numpts, d_fieldptr.data(), 1, d_params, nullptr, nullptr);
 
 		cudaDeviceSynchronize();
 		cudaFree(d_params);
@@ -410,4 +412,3 @@ void prepareFTchiLinear(background & class_background, perturbs & class_perturbs
 #endif
 
 #endif
-

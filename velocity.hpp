@@ -15,6 +15,7 @@
 #ifndef VELOCITY_HEADER
 #define VELOCITY_HEADER
 
+#include "cuda_staging.hpp"
 #include <gsl/gsl_odeiv.h>
 #include <gsl/gsl_matrix.h>
 #include <gsl/gsl_errno.h>
@@ -140,6 +141,7 @@ void compute_vi_rescaled(cosmology & cosmo, Field<Real> * vi, Field<Real> * sour
 	}*/
 
     Field<Real> * fields[3] = {source, Ti0, vi};
+    DeviceStagingBuffer<Field<Real> *> d_fields(fields, 3);
     double params[2] = {a, D1_prime(cosmo, a)/D1_prime(cosmo, a_old)*a/a_old};
     double * d_params;
 
@@ -150,7 +152,7 @@ void compute_vi_rescaled(cosmology & cosmo, Field<Real> * vi, Field<Real> * sour
     int block_x = vi->lattice().sizeLocal(1);
     int block_y = vi->lattice().sizeLocal(2);
 
-    lattice_for_each<<<dim3(block_x, block_y), 128>>>(compute_vi_rescaled_functor(), numpts, fields, 3, d_params, nullptr, nullptr);
+    lattice_for_each<<<dim3(block_x, block_y), 128>>>(compute_vi_rescaled_functor(), numpts, d_fields.data(), 3, d_params, nullptr, nullptr);
 
     cudaDeviceSynchronize();
 
@@ -158,4 +160,3 @@ void compute_vi_rescaled(cosmology & cosmo, Field<Real> * vi, Field<Real> * sour
 }
 
 #endif
-
