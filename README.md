@@ -26,7 +26,8 @@ Software.**
 Before compilation, make sure that all required external libraries are
 installed:
 
-* LATfield2 [version 1.1 with GPU support](https://gitlab.uzh.ch/julian.adamek/LATfield2.git)
+* LATfield2 [version 1.1 with GPU support](https://github.com/gevolution-code/LATfield2)
+* NVIDIA CUDA toolkit, including `nvcc`
 * FFTW version 3
 * GNU Scientific Library (GSL) including CBLAS
 * HDF5
