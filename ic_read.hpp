@@ -84,6 +84,7 @@ static long readIC_express_total_particles(string filename, gadget2_header & hdr
 	string rank_filename = express_rank_filename(filename, parallel.rank());
 	FILE * infile = fopen(rank_filename.c_str(), "rb");
 	express_header ehdr;
+	uint32_t blocksize = 0;
 
 	if (infile == NULL)
 	{
@@ -91,35 +92,30 @@ static long readIC_express_total_particles(string filename, gadget2_header & hdr
 		throw std::runtime_error("Could not open express metadata file");
 	}
 
-	if (fread(&ehdr, sizeof(ehdr), 1, infile) != 1 ||
-		memcmp(ehdr.magic, EXPRESS_MAGIC, sizeof(ehdr.magic)) != 0 ||
-		ehdr.version != EXPRESS_VERSION ||
-		ehdr.header_size != sizeof(ehdr))
+	// the file is an ordinary Gadget-2 format-1 snapshot: read the leading block
+	// size marker and the gadget2_header (which carries the express metadata in its
+	// fill[] padding)
+	if (fread(&blocksize, sizeof(uint32_t), 1, infile) != 1 || blocksize != sizeof(hdr) ||
+		fread(&hdr, sizeof(hdr), 1, infile) != 1)
 	{
 		fclose(infile);
 		COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": could not read express metadata from " << rank_filename << "!" << endl;
 		throw std::runtime_error("Could not read express metadata");
 	}
 
-	uint64_t hdr_offset = sizeof(ehdr) + ehdr.position_bytes + ehdr.momentum_bytes + ehdr.id_bytes;
-	if (fseek(infile, hdr_offset, SEEK_SET) || fread(&hdr, sizeof(hdr), 1, infile) != 1)
-	{
-		fclose(infile);
-		COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": could not read appended Gadget2 metadata from " << rank_filename << "!" << endl;
-		throw std::runtime_error("Could not read express Gadget2 metadata");
-	}
-
 	fclose(infile);
 
-	long hdr_npart = (long) hdr.npartTotal[1] + ((long) hdr.npartTotalHW[1] << 32);
-	if (hdr_npart != (long) ehdr.global_npart)
+	memcpy(&ehdr, hdr.fill, sizeof(ehdr));
+	if (memcmp(ehdr.magic, EXPRESS_MAGIC, sizeof(ehdr.magic)) != 0 || ehdr.version != EXPRESS_VERSION || ehdr.endian != EXPRESS_ENDIAN)
 	{
-		COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": express metadata particle count mismatch in " << rank_filename << "!" << endl;
-		throw std::runtime_error("Express metadata particle count mismatch");
+		COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": file " << rank_filename << " is not a gevolution express snapshot!" << endl;
+		throw std::runtime_error("Not a gevolution express snapshot");
 	}
 
+	long hdr_npart = (long) hdr.npartTotal[1] + ((long) hdr.npartTotalHW[1] << 32);
+
 	if (local_particles != NULL)
-		*local_particles = (long) ehdr.local_npart;
+		*local_particles = (long) hdr.npart[1];
 
 	return hdr_npart;
 }
@@ -132,7 +128,7 @@ static uint64_t readIC_particle_capacity_estimate(long total_particles)
 	return (16L * (uint64_t) total_particles) / (15L * (uint64_t) parallel.size());
 }
 
-void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fourpiG, double & a, double & tau, double & dtau, double & dtau_old, perfParticles_gevolution<part_simple,part_simple_info> * pcls_cdm, perfParticles_gevolution<part_simple,part_simple_info> * pcls_b, Particles_gevolution<part_simple,part_simple_info,part_simple_dataType> * pcls_ncdm, double * maxvel, Field<Real> * phi, Field<Real> * chi, Field<Real> * Bi, Field<Real> * source, Field<Real> * Sij, Field<Cplx> * zetaFT, Field<Cplx> * scalarFT, Field<Cplx> * BiFT, Field<Cplx> * SijFT, PlanFFT<Cplx> * plan_phi, PlanFFT<Cplx> * plan_chi, PlanFFT<Cplx> * plan_Bi, PlanFFT<Cplx> * plan_source, PlanFFT<Cplx> * plan_Sij, int & cycle, int & snapcount, int & pkcount, int & restartcount, LightconeIDBacklog ** IDbacklog)
+void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fourpiG, double & a, double & tau, double & dtau, double & dtau_old, perfParticles_gevolution<part_simple,part_simple_info> * pcls_cdm, perfParticles_gevolution<part_simple,part_simple_info> * pcls_b, perfParticles_gevolution<part_simple,part_simple_info> * pcls_ncdm, double * maxvel, Field<Real> * phi, Field<Real> * chi, Field<Real> * Bi, Field<Real> * source, Field<Real> * Sij, Field<Cplx> * zetaFT, Field<Cplx> * scalarFT, Field<Cplx> * BiFT, Field<Cplx> * SijFT, PlanFFT<Cplx> * plan_phi, PlanFFT<Cplx> * plan_chi, PlanFFT<Cplx> * plan_Bi, PlanFFT<Cplx> * plan_source, PlanFFT<Cplx> * plan_Sij, int & cycle, int & snapcount, int & pkcount, int & restartcount, LightconeIDBacklog ** IDbacklog)
 {
 	part_simple_info pcls_cdm_info;
 	part_simple_dataType pcls_cdm_dataType;
@@ -148,11 +144,11 @@ void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fou
 	char line[PARAM_MAX_LINESIZE];
 	FILE * bgfile = NULL;
 	FILE * lcfile = NULL;
-	struct fileDsc fd;
+	// struct fileDsc fd;
 	gadget2_header hdr;
-	long * numpcl;
-	Real * dummy1;
-	Real * dummy2;
+	// long * numpcl;
+	// Real * dummy1;
+	// Real * dummy2;
 	Site x(Bi->lattice());
 	Site xPart(pcls_cdm->lattice());
 	rKSite kFT(scalarFT->lattice());
@@ -312,6 +308,13 @@ void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fou
 			COUT << " error: HDF5 input not supported for baryon particles!" << endl;
 			throw std::runtime_error("HDF5 input is not supported for baryon particles");
 		}
+		else if (ic.flags & ICFLAG_EXPRESSREADER)
+		{
+			filename.assign(ic.pclfile[1]);
+			pcls_b->loadExpress(filename, hdr);
+			sim.numpcl[1] = (long) hdr.npartTotal[1] + ((long) hdr.npartTotalHW[1] << 32);
+			pcls_b->parts_info()->mass = cosmo.Omega_b / (Real) sim.numpcl[1];
+		}
 		else
 		{
 			i = 0;
@@ -355,22 +358,19 @@ void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fou
 		pcls_ncdm_info[p].mass = 0.;
 		pcls_ncdm_info[p].relativistic = true;
 	
-		pcls_ncdm[p].initialize(pcls_ncdm_info[p], pcls_ncdm_dataType, &(phi->lattice()), boxSize);
-		
+		pcls_ncdm[p].initialize(pcls_ncdm_info[p], &(phi->lattice()), boxSize, PCL_EXTRA_CAPACITY, PCL_EXTRA_CAPACITY);
+
 		if ((ext = strstr(ic.pclfile[sim.baryon_flag+1+p], ".h5")) != NULL)
 		{
-			filename.assign(ic.pclfile[sim.baryon_flag+1+p], ext-ic.pclfile[sim.baryon_flag+1+p]);
-			get_fileDsc_global(filename + ".h5", fd);
-			numpcl = (long *) malloc(fd.numProcPerFile * sizeof(long));
-			dummy1 = (Real *) malloc(3 * fd.numProcPerFile * sizeof(Real));
-			dummy2 = (Real *) malloc(3 * fd.numProcPerFile * sizeof(Real));
-			get_fileDsc_local(filename + ".h5", numpcl, dummy1, dummy2, fd.numProcPerFile);
-			for (i = 0; i < fd.numProcPerFile; i++)
-				sim.numpcl[1] += numpcl[i];
-			pcls_ncdm[p].loadHDF5(filename, 1);
-			free(numpcl);
-			free(dummy1);
-			free(dummy2);
+			COUT << " error: HDF5 input not supported for ncdm particles!" << endl;
+			throw std::runtime_error("HDF5 input is not supported for ncdm particles");
+		}
+		else if (ic.flags & ICFLAG_EXPRESSREADER)
+		{
+			filename.assign(ic.pclfile[sim.baryon_flag+1+p]);
+			pcls_ncdm[p].loadExpress(filename, hdr);
+			sim.numpcl[sim.baryon_flag+1+p] = (long) hdr.npartTotal[1] + ((long) hdr.npartTotalHW[1] << 32);
+			pcls_ncdm[p].parts_info()->mass = cosmo.Omega_ncdm[p] / (Real) sim.numpcl[sim.baryon_flag+1+p];
 		}
 		else
 		{
@@ -400,7 +400,7 @@ void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fou
 		}
 		
 		COUT << " " << sim.numpcl[sim.baryon_flag+1+p] << " ncdm particles read successfully." << endl;
-		maxvel[sim.baryon_flag+1+p] = pcls_ncdm[p].updateVel(update_q, 0., &phi, 1, f_params);
+		maxvel[sim.baryon_flag+1+p] = pcls_ncdm[p].updateVel(update_q_functor(), 0., &phi, 1, d_f_params.data());
 	}
 	
 	if (sim.gr_flag > 0 && ic.metricfile[0][0] != '\0')
@@ -727,11 +727,12 @@ void readIC(metadata & sim, icsettings & ic, cosmology & cosmo, const double fou
 					}
 					else
 					{
-						for (xPart.first(); xPart.test(); xPart.next())
+						/*for (xPart.first(); xPart.test(); xPart.next())
 						{
 							for (auto it = (pcls_ncdm[p-1-sim.baryon_flag].field())(xPart).parts.begin(); it != (pcls_ncdm[p-1-sim.baryon_flag].field())(xPart).parts.end(); ++it)
 								IDlookup[sim.IDlog_mapping[i]].insert((*it).ID);
-						}
+						}*/
+						// FIXME: collect IDs from all particles in the lightcone
 					}
 				
 					if (parallel.isRoot())

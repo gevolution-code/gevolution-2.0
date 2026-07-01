@@ -27,6 +27,25 @@
 
 using namespace std;
 
+#ifdef TENSOR_EVOLUTION
+struct makehijprimenormfunctor
+{
+	__host__ __device__ void operator()(Field<Real> * fields[], Site * sites, int nfields, double * params, double * outputs)
+	{
+#define scalar (*fields[0])
+#define Sijfield (*fields[1])
+#define xscalar (sites[0])
+#define xSij (sites[1])
+		scalar(xscalar) = Sijfield(xSij,0,0) * Sijfield(xSij,0,0) + Sijfield(xSij,1,1) * Sijfield(xSij,1,1) + Sijfield(xSij,2,2) * Sijfield(xSij,2,2)
+						+ 2. * Sijfield(xSij,0,1) * Sijfield(xSij,0,1) + 2. * Sijfield(xSij,0,2) * Sijfield(xSij,0,2) + 2. * Sijfield(xSij,1,2) * Sijfield(xSij,1,2);
+#undef scalar
+#undef Sijfield
+#undef xscalar
+#undef xSij
+	}
+};
+#endif
+
 
 //////////////////////////
 // writeSnapshots
@@ -67,7 +86,10 @@ using namespace std;
 //
 //////////////////////////
 
-void writeSnapshots(metadata & sim, cosmology & cosmo, const double fourpiG, const double a, const double dtau_old, const int done_hij, const int snapcount, string h5filename, perfParticles_gevolution<part_simple,part_simple_info> * pcls_cdm, perfParticles_gevolution<part_simple,part_simple_info> * pcls_b, Particles_gevolution<part_simple,part_simple_info,part_simple_dataType> * pcls_ncdm, Field<Real> * phi, Field<Real> * chi, Field<Real> * Bi, Field<Real> * source, Field<Real> * Sij, Field<Cplx> * scalarFT, Field<Cplx> * BiFT, Field<Cplx> * SijFT, PlanFFT<Cplx> * plan_phi, PlanFFT<Cplx> * plan_chi, PlanFFT<Cplx> * plan_Bi, PlanFFT<Cplx> * plan_source, PlanFFT<Cplx> * plan_Sij
+void writeSnapshots(metadata & sim, cosmology & cosmo, const double fourpiG, const double a, const double dtau_old, const int done_hij, const int snapcount, string h5filename, perfParticles_gevolution<part_simple,part_simple_info> * pcls_cdm, perfParticles_gevolution<part_simple,part_simple_info> * pcls_b, perfParticles_gevolution<part_simple,part_simple_info> * pcls_ncdm, Field<Real> * phi, Field<Real> * chi, Field<Real> * Bi, Field<Real> * source, Field<Real> * Sij, Field<Cplx> * scalarFT, Field<Cplx> * BiFT, Field<Cplx> * SijFT, PlanFFT<Cplx> * plan_phi, PlanFFT<Cplx> * plan_chi, PlanFFT<Cplx> * plan_Bi, PlanFFT<Cplx> * plan_source, PlanFFT<Cplx> * plan_Sij
+#ifdef TENSOR_EVOLUTION
+, Field<Cplx> * hijFT, Field<Cplx> * hijprimeFT, PlanFFT<Cplx> * plan_hij, PlanFFT<Cplx> * plan_hijprime
+#endif
 #ifdef CHECK_B
 , Field<Real> * Bi_check, Field<Cplx> * BiFT_check, PlanFFT<Cplx> * plan_Bi_check
 #endif
@@ -309,8 +331,37 @@ void writeSnapshots(metadata & sim, cosmology & cosmo, const double fourpiG, con
 		else
 			Sij->saveHDF5(h5filename + filename + "_hij.h5");
 #endif
+#ifdef TENSOR_EVOLUTION
+		plan_hij->execute(FFT_BACKWARD);
+		if (sim.downgrade_factor > 1)
+			Sij->saveHDF5_coarseGrain3D(h5filename + filename + "_hij_dyn.h5", sim.downgrade_factor);
+		else
+			Sij->saveHDF5(h5filename + filename + "_hij_dyn.h5");
+		plan_hijprime->execute(FFT_BACKWARD);
+		if (sim.downgrade_factor > 1)
+			Sij->saveHDF5_coarseGrain3D(h5filename + filename + "_hij_prime.h5", sim.downgrade_factor);
+		else
+			Sij->saveHDF5(h5filename + filename + "_hij_prime.h5");
+#endif
 		nvtxRangePop();
 	}
+
+#ifdef TENSOR_EVOLUTION
+	if (sim.out_snapshot & MASK_HIJPRIMENORM)
+	{
+		nvtxRangePushA("hij_prime_norm output");
+		plan_hijprime->execute(FFT_BACKWARD);
+		Field<Real> * hijprimenorm_fields[2] = {source, Sij};
+		DeviceStagingBuffer<Field<Real> *> d_hijprimenorm_fields(hijprimenorm_fields, 2);
+		lattice_for_each<<<dim3(source->lattice().sizeLocal(1), source->lattice().sizeLocal(2)), 128>>>(makehijprimenormfunctor(), source->lattice().sizeLocal(0), d_hijprimenorm_fields.data(), 2, nullptr, nullptr, nullptr);
+		cudaDeviceSynchronize();
+		if (sim.downgrade_factor > 1)
+			source->saveHDF5_coarseGrain3D(h5filename + filename + "_hij_prime_norm.h5", sim.downgrade_factor);
+		else
+			source->saveHDF5(h5filename + filename + "_hij_prime_norm.h5");
+		nvtxRangePop();
+	}
+#endif
 
 	if (sim.out_snapshot & MASK_TIJ)
 	{
@@ -476,7 +527,7 @@ void writeSnapshots(metadata & sim, cosmology & cosmo, const double fourpiG, con
 		for (int i = 0; i < cosmo.num_ncdm; i++)
 		{
 			if (sim.out_snapshot & MASK_MULTI)
-				hdr.num_files = parallel.grid_size()[1];
+				hdr.num_files = parallel.size();
 
 			if (sim.numpcl[1+sim.baryon_flag+i] == 0 || sim.tracer_factor[i+1+sim.baryon_flag] == 0) continue;
 			sprintf(buffer, "_ncdm%d", i);
@@ -503,8 +554,8 @@ void writeSnapshots(metadata & sim, cosmology & cosmo, const double fourpiG, con
 			pcls_b->saveHDF5_server_write();*/
 		for (int i = 0; i < cosmo.num_ncdm; i++)
 		{
-			if (sim.numpcl[1+sim.baryon_flag+i] == 0) continue;
-			pcls_ncdm[i].saveHDF5_server_write();
+			// if (sim.numpcl[1+sim.baryon_flag+i] == 0) continue;
+			// pcls_ncdm[i].saveHDF5_server_write();
 		}
 #else
 		/*pcls_cdm->saveHDF5(h5filename + filename + "_cdm", 1);
@@ -512,9 +563,9 @@ void writeSnapshots(metadata & sim, cosmology & cosmo, const double fourpiG, con
 			pcls_b->saveHDF5(h5filename + filename + "_b", 1);*/
 		for (int i = 0; i < cosmo.num_ncdm; i++)
 		{
-			if (sim.numpcl[1+sim.baryon_flag+i] == 0) continue;
-			sprintf(buffer, "_ncdm%d", i);
-			pcls_ncdm[i].saveHDF5(h5filename + filename + buffer, 1);
+			// if (sim.numpcl[1+sim.baryon_flag+i] == 0) continue;
+			// sprintf(buffer, "_ncdm%d", i);
+			// pcls_ncdm[i].saveHDF5(h5filename + filename + buffer, 1);
 		}
 #endif
 		nvtxRangePop();
@@ -991,7 +1042,7 @@ inline int64_t healpix_find_pixbatch_offset(const HealpixShellDesc & desc, int b
 //
 //////////////////////////
 
-void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, const double a, const double tau, const double dtau, const double dtau_old, const double maxvel, const int cycle, string h5filename, perfParticles_gevolution<part_simple,part_simple_info> * pcls_cdm, perfParticles_gevolution<part_simple,part_simple_info> * pcls_b, Particles_gevolution<part_simple,part_simple_info,part_simple_dataType> * pcls_ncdm, Field<Real> * phi, Field<Real> * chi, Field<Real> * Bi, Field<Real> * Sij, Field<Cplx> * BiFT, Field<Cplx> * SijFT, PlanFFT<Cplx> * plan_Bi, PlanFFT<Cplx> * plan_Sij, int & done_hij, LightconeIDBacklog ** IDbacklog)
+void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, const double a, const double tau, const double dtau, const double dtau_old, const double maxvel, const int cycle, string h5filename, perfParticles_gevolution<part_simple,part_simple_info> * pcls_cdm, perfParticles_gevolution<part_simple,part_simple_info> * pcls_b, perfParticles_gevolution<part_simple,part_simple_info> * pcls_ncdm, Field<Real> * phi, Field<Real> * chi, Field<Real> * Bi, Field<Real> * Sij, Field<Cplx> * BiFT, Field<Cplx> * SijFT, PlanFFT<Cplx> * plan_Bi, PlanFFT<Cplx> * plan_Sij, int & done_hij, LightconeIDBacklog ** IDbacklog)
 {
 	int i, j, n, p;
 	double d;
@@ -2906,7 +2957,7 @@ void writeSpectra(metadata & sim, cosmology & cosmo, const double fourpiG, const
 #ifdef HAVE_CLASS
 background & class_background, perturbs & class_perturbs, icsettings & ic,
 #endif
-perfParticles_gevolution<part_simple,part_simple_info> * pcls_cdm, perfParticles_gevolution<part_simple,part_simple_info> * pcls_b, Particles_gevolution<part_simple,part_simple_info,part_simple_dataType> * pcls_ncdm, Field<Real> * phi, Field<Real> * chi, Field<Real> * Bi, Field<Real> * source, Field<Real> * Sij, Field<Cplx> * zetaFT, Field<Cplx> * scalarFT, Field<Cplx> * BiFT, Field<Cplx> * SijFT, PlanFFT<Cplx> * plan_phi, PlanFFT<Cplx> * plan_chi, PlanFFT<Cplx> * plan_Bi, PlanFFT<Cplx> * plan_source, PlanFFT<Cplx> * plan_Sij
+perfParticles_gevolution<part_simple,part_simple_info> * pcls_cdm, perfParticles_gevolution<part_simple,part_simple_info> * pcls_b, perfParticles_gevolution<part_simple,part_simple_info> * pcls_ncdm, Field<Real> * phi, Field<Real> * chi, Field<Real> * Bi, Field<Real> * source, Field<Real> * Sij, Field<Cplx> * zetaFT, Field<Cplx> * scalarFT, Field<Cplx> * BiFT, Field<Cplx> * SijFT, PlanFFT<Cplx> * plan_phi, PlanFFT<Cplx> * plan_chi, PlanFFT<Cplx> * plan_Bi, PlanFFT<Cplx> * plan_source, PlanFFT<Cplx> * plan_Sij
 #ifdef CHECK_B
 , Field<Real> * Bi_check, Field<Cplx> * BiFT_check, PlanFFT<Cplx> * plan_Bi_check
 #endif

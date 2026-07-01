@@ -285,8 +285,13 @@ int main(int argc, char **argv)
 	ManagedCudaObject<perfParticles_gevolution<part_simple,part_simple_info>> pcls_b_storage;
 	perfParticles_gevolution<part_simple,part_simple_info> & pcls_cdm = pcls_cdm_storage.get();
 	perfParticles_gevolution<part_simple,part_simple_info> & pcls_b = pcls_b_storage.get();
-	Particles_gevolution<part_simple,part_simple_info,part_simple_dataType> * pcls_ncdm = nullptr;
-	if (cosmo.num_ncdm > 0) pcls_ncdm = new Particles_gevolution<part_simple,part_simple_info,part_simple_dataType>[cosmo.num_ncdm];
+	perfParticles_gevolution<part_simple,part_simple_info> * pcls_ncdm = nullptr;
+	if (cosmo.num_ncdm > 0)
+	{
+		gevolution_cuda_check(cudaMallocManaged((void **) &pcls_ncdm, cosmo.num_ncdm * sizeof(perfParticles_gevolution<part_simple,part_simple_info>)), "CUDA managed-object allocation failed");
+		for (int i = 0; i < cosmo.num_ncdm; i++)
+			new (pcls_ncdm + i) perfParticles_gevolution<part_simple,part_simple_info>();
+	}
 
 	Field<Real> * update_cdm_fields[3];
 	Field<Real> * update_b_fields[3];
@@ -301,27 +306,41 @@ int main(int argc, char **argv)
 	for (int i = 0; i < sim.num_IDlogs; i++)
 		IDbacklog[i] = new LightconeIDBacklog [MAX_PCL_SPECIES];
 
+	ManagedCudaObject<Field<Real>> Sij_storage;
+	Field<Real> & Sij = Sij_storage.get();
+	Sij.initialize(lat,3,3,symmetric);
+	Field<Cplx> SijFT;
+	SijFT.initialize(latFT,3,3,symmetric);
+#ifdef TENSOR_EVOLUTION
+	Field<Cplx> hijFT;
+	Field<Cplx> hijprimeFT;
+	hijFT.initialize(latFT,3,3,symmetric);
+	hijprimeFT.initialize(latFT,3,3,symmetric);
+	PlanFFT<Cplx> plan_hij(&Sij, &hijFT);
+	PlanFFT<Cplx> plan_hijprime(&Sij, &hijprimeFT);
+	// hijprimeFT.alloc();
+	plan_hij.setExecutionMode(FFT_EXECUTION_CUDA_AWARE_MPI);
+	plan_hijprime.setExecutionMode(FFT_EXECUTION_CUDA_AWARE_MPI);
+#endif
+	PlanFFT<Cplx> plan_Sij(&Sij, &SijFT);
+	
 	ManagedCudaObject<Field<Real>> phi_storage;
 	ManagedCudaObject<Field<Real>> source_storage;
 	ManagedCudaObject<Field<Real>> chi_storage;
-	ManagedCudaObject<Field<Real>> Sij_storage;
 	ManagedCudaObject<Field<Real>> Bi_storage;
 	Field<Real> & phi = phi_storage.get();
 	Field<Real> & source = source_storage.get();
 	Field<Real> & chi = chi_storage.get();
-	Field<Real> & Sij = Sij_storage.get();
+	
 	Field<Real> & Bi = Bi_storage.get();
 	Field<Cplx> scalarFT;
-	Field<Cplx> SijFT;
+	
 	Field<Cplx> BiFT;
 	Field<Cplx> * zetaFT = NULL;
 	source.initialize(lat,1);
 	phi.initialize(lat,1);
 	chi.initialize(lat,1);
 	scalarFT.initialize(latFT,1);
-	Sij.initialize(lat,3,3,symmetric);
-	SijFT.initialize(latFT,3,3,symmetric);
-	PlanFFT<Cplx> plan_Sij(&Sij, &SijFT);
 	//plan_Sij.preallocate();
 	PlanFFT<Cplx> plan_source(&source, &scalarFT);
 	PlanFFT<Cplx> plan_phi(&phi, &scalarFT);
@@ -352,15 +371,6 @@ int main(int argc, char **argv)
 	PlanFFT<Cplx> plan_vi(&vi, &viFT);
 	plan_vi.setExecutionMode(FFT_EXECUTION_CUDA_AWARE_MPI);
 	double a_old;
-#endif
-#ifdef TENSOR_EVOLUTION
-	Field<Cplx> hijFT;
-	Field<Cplx> hijprimeFT;
-	hijFT.initialize(latFT,3,3,symmetric);
-	hijprimeFT.initialize(latFT,3,3,symmetric);
-	PlanFFT<Cplx> plan_hij(&Sij, &hijFT);
-	hijprimeFT.alloc();
-	plan_hij.setExecutionMode(FFT_EXECUTION_CUDA_AWARE_MPI);
 #endif
 
 	update_cdm_fields[0] = &phi;
@@ -463,6 +473,29 @@ int main(int argc, char **argv)
 	for (long i = 0; i < hijprimeFT.components() * latFT.sitesLocalGross(); i++)
 	{
 		hijprimeFT.data()[i] = Cplx(0,0);
+	}
+	if (ic.generator == ICGEN_READ_FROM_DISK && ic.GWreadFields && ic.hijfile[0] != '\0')
+	{
+		string tensorfile;
+		tensorfile.assign(ic.hijfile);
+		hijFT.loadHDF5(tensorfile);
+		tensorfile.assign(ic.hijprimefile);
+		hijprimeFT.loadHDF5(tensorfile);
+		/**/
+		Real * kbin = (Real *) malloc(sim.numbins * sizeof(Real));
+		Real * power = (Real *) malloc(sim.numbins * sizeof(Real));
+		Real * kscatter = (Real *) malloc(sim.numbins * sizeof(Real));
+		Real * pscatter = (Real *) malloc(sim.numbins * sizeof(Real));
+		int * occupation = (int *) malloc(sim.numbins * sizeof(int));
+		extractPowerSpectrum(hijprimeFT, kbin, power, kscatter, pscatter, occupation, sim.numbins, false, KTYPE_LINEAR);
+		sprintf(filename, "%s%s%03d_hij_prime_debug.dat", sim.output_path, sim.basename_pk, 0);
+		writePowerSpectrum(kbin, power, kscatter, pscatter, occupation, sim.numbins, sim.boxsize, 2. * M_PI * M_PI * Hconf(a, fourpiG, cosmo) * Hconf(a, fourpiG, cosmo), filename, "power spectrum of hij' / Hconf", a, sim.z_pk[pkcount]);
+		free(kbin);
+		free(power);
+		free(kscatter);
+		free(pscatter);
+		free(occupation);
+		COUT << " restored dynamical tensor fields hij/hij' from " << ic.hijfile << " and " << ic.hijprimefile << endl;
 	}
 #endif
 	
@@ -932,7 +965,22 @@ int main(int argc, char **argv)
 #ifdef TENSOR_EVOLUTION
 			nvtxRangePushA("Solve hij (k-space)");
 			if (cycle == 0)
+			{
 				projectFTtensor(SijFT, hijFT);
+				// store the static hij to seed the adiabatic initial condition for hij' next cycle
+				#pragma omp parallel for
+				for (long i = 0; i < hijprimeFT.components() * latFT.sitesLocalGross(); i++)
+					hijprimeFT.data()[i] = hijFT.data()[i];
+			}
+			else if (cycle == 1)
+			{
+				projectFTtensor(SijFT, hijFT);
+				// adiabatic initial condition: hij' = d(hij)/dtau by finite difference over the first step
+				// (starting from hij' = 0 would leave hij pinned at the static fixed point, keeping hij' ~ 0)
+				#pragma omp parallel for
+				for (long i = 0; i < hijprimeFT.components() * latFT.sitesLocalGross(); i++)
+					hijprimeFT.data()[i] = (hijFT.data()[i] - hijprimeFT.data()[i]) / dtau_old;
+			}
 			else
 				evolveFTtensor(SijFT, hijFT, hijprimeFT, Hconf(a, fourpiG, cosmo), dtau, dtau_old);
 			nvtxRangePop();
@@ -1026,6 +1074,9 @@ int main(int argc, char **argv)
 			COUT << COLORTEXT_CYAN << " writing snapshot" << COLORTEXT_RESET << " at z = " << ((1./a) - 1.) <<  " (cycle " << cycle << "), tau/boxsize = " << tau << endl;
 
 			writeSnapshots(sim, cosmo, fourpiG, a, dtau_old, done_hij, snapcount, h5filename + sim.basename_snapshot, &pcls_cdm, &pcls_b, pcls_ncdm, &phi, &chi, &Bi, &source, &Sij, &scalarFT, &BiFT, &SijFT, &plan_phi, &plan_chi, &plan_Bi, &plan_source, &plan_Sij
+#ifdef TENSOR_EVOLUTION
+				, &hijFT, &hijprimeFT, &plan_hij, &plan_hijprime
+#endif
 #ifdef CHECK_B
 				, &Bi_check, &BiFT_check, &plan_Bi_check
 #endif
@@ -1159,10 +1210,11 @@ int main(int argc, char **argv)
 			{
 				f_params[0] = tmp;
 				f_params[1] = tmp * tmp * sim.numpts;
+				d_f_params.copy_from_host(f_params, 7);
 				if (sim.gr_flag > 0)
-					maxvel[i+1+sim.baryon_flag] = pcls_ncdm[i].updateVel(update_q, (dtau + dtau_old) / 2. / numsteps_ncdm[i], update_ncdm_fields, (1. / a < ic.z_relax + 1. ? 3 : 2), f_params);
+					maxvel[i+1+sim.baryon_flag] = pcls_ncdm[i].updateVel(update_q_functor(), (dtau + dtau_old) / 2. / numsteps_ncdm[i], update_ncdm_fields, (1. / a < ic.z_relax + 1. ? 3 : 2), d_f_params.data());
 				else
-					maxvel[i+1+sim.baryon_flag] = pcls_ncdm[i].updateVel(update_q_Newton, (dtau + dtau_old) / 2. / numsteps_ncdm[i], update_ncdm_fields, ((sim.radiation_flag + sim.fluid_flag > 0 && a < 1. / (sim.z_switch_linearchi + 1.)) ? 2 : 1), f_params);
+					maxvel[i+1+sim.baryon_flag] = pcls_ncdm[i].updateVel(update_q_Newton_functor(), (dtau + dtau_old) / 2. / numsteps_ncdm[i], update_ncdm_fields, ((sim.radiation_flag + sim.fluid_flag > 0 && a < 1. / (sim.z_switch_linearchi + 1.)) ? 2 : 1), d_f_params.data());
 
 #ifdef BENCHMARK
 				update_q_count++;
@@ -1173,11 +1225,12 @@ int main(int argc, char **argv)
 				rungekutta4bg(tmp, fourpiG, cosmo, 0.5 * dtau / numsteps_ncdm[i]);
 				f_params[0] = tmp;
 				f_params[1] = tmp * tmp * sim.numpts;
-				
+				d_f_params.copy_from_host(f_params, 7);
+
 				if (sim.gr_flag > 0)
-					pcls_ncdm[i].moveParticles(update_pos, dtau / numsteps_ncdm[i], update_ncdm_fields, (1. / a < ic.z_relax + 1. ? 3 : 2), f_params);
+					pcls_ncdm[i].moveParticles(update_pos_functor(), dtau / numsteps_ncdm[i], update_ncdm_fields, (1. / a < ic.z_relax + 1. ? 3 : 2), d_f_params.data());
 				else
-					pcls_ncdm[i].moveParticles(update_pos_Newton, dtau / numsteps_ncdm[i], NULL, 0, f_params);
+					pcls_ncdm[i].moveParticles(update_pos_Newton_functor(), dtau / numsteps_ncdm[i], NULL, 0, d_f_params.data());
 #ifdef BENCHMARK
 				moveParts_count++;
 				moveParts_time += MPI_Wtime() - ref2_time;
@@ -1257,15 +1310,54 @@ int main(int argc, char **argv)
 			parallel.max(tmp);
 			if (tmp > sim.wallclocklimit)   // hibernate
 			{
-				COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": hibernation wallclock limit reached, but GPU checkpoint writing is not implemented." << endl;
-				parallel.abortForce();
+				COUT << COLORTEXT_YELLOW << " reaching hibernation wallclock limit, hibernating..." << COLORTEXT_RESET << endl;
+				COUT << COLORTEXT_CYAN << " writing hibernation point" << COLORTEXT_RESET << " at z = " << ((1./a) - 1.) <<  " (cycle " << cycle << "), tau/boxsize = " << tau << endl;
+				if (sim.vector_flag == VECTOR_PARABOLIC && sim.gr_flag == 0)
+					plan_Bi.execute(FFT_BACKWARD);
+#ifdef CHECK_B
+				if (sim.vector_flag == VECTOR_ELLIPTIC)
+				{
+					plan_Bi_check.execute(FFT_BACKWARD);
+					hibernate(sim, ic, cosmo, &pcls_cdm, &pcls_b, pcls_ncdm, phi, chi, Bi_check,
+#ifdef TENSOR_EVOLUTION
+						hijFT, hijprimeFT,
+#endif
+						a, tau, dtau, cycle);
+				}
+				else
+#endif
+				hibernate(sim, ic, cosmo, &pcls_cdm, &pcls_b, pcls_ncdm, phi, chi, Bi,
+#ifdef TENSOR_EVOLUTION
+					hijFT, hijprimeFT,
+#endif
+					a, tau, dtau, cycle);
+				break;
 			}
 		}
-		
+
 		if (restartcount < sim.num_restart && 1. / a < sim.z_restart[restartcount] + 1.)
 		{
-			COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": hibernation redshift reached, but GPU checkpoint writing is not implemented." << endl;
-			parallel.abortForce();
+			COUT << COLORTEXT_CYAN << " writing hibernation point" << COLORTEXT_RESET << " at z = " << ((1./a) - 1.) <<  " (cycle " << cycle << "), tau/boxsize = " << tau << endl;
+			if (sim.vector_flag == VECTOR_PARABOLIC && sim.gr_flag == 0)
+				plan_Bi.execute(FFT_BACKWARD);
+#ifdef CHECK_B
+			if (sim.vector_flag == VECTOR_ELLIPTIC)
+			{
+				plan_Bi_check.execute(FFT_BACKWARD);
+				hibernate(sim, ic, cosmo, &pcls_cdm, &pcls_b, pcls_ncdm, phi, chi, Bi_check,
+#ifdef TENSOR_EVOLUTION
+					hijFT, hijprimeFT,
+#endif
+					a, tau, dtau, cycle, restartcount);
+			}
+			else
+#endif
+			hibernate(sim, ic, cosmo, &pcls_cdm, &pcls_b, pcls_ncdm, phi, chi, Bi,
+#ifdef TENSOR_EVOLUTION
+				hijFT, hijprimeFT,
+#endif
+				a, tau, dtau, cycle, restartcount);
+			restartcount++;
 		}
 		
 		dtau_old = dtau;
@@ -1341,7 +1433,12 @@ delete [] IDbacklog;
 	}
 #endif
 
-	if (cosmo.num_ncdm > 0) delete[] pcls_ncdm;
+	if (cosmo.num_ncdm > 0)
+	{
+		for (int i = 0; i < cosmo.num_ncdm; i++)
+			pcls_ncdm[i].~perfParticles_gevolution<part_simple,part_simple_info>();
+		cudaFree(pcls_ncdm);
+	}
 
 	parallel.finalize();
 

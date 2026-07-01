@@ -1,12 +1,21 @@
 //////////////////////////
 // hibernation.hpp
 //////////////////////////
-// 
+//
 // Auxiliary functions for hibernation
 //
 // Author: Julian Adamek (Université de Genève & Observatoire de Paris & Queen Mary University of London & Universität Zürich)
 //
 // Last modified: August 2024
+//
+// Modified for the GPU backend:
+//  - the restart settings file is produced by copying the _settings_used.ini file
+//    generated at initialisation and overriding only the restart-relevant
+//    parameters, so that all other settings (cosmology, output, lightcones,
+//    hibernation schedule, ...) are carried over automatically;
+//  - particles are stored in Gadget2 format (this version has no HDF5 particle
+//    I/O), saving the raw phase-space state (no drift/kick) so that the restart
+//    read continues the leapfrog exactly (ic_read restores dtau_old).
 //
 //////////////////////////
 
@@ -14,13 +23,49 @@
 #define HIBERNATION_HEADER
 
 //////////////////////////
+// restartOverridesParameter
+//////////////////////////
+// Description:
+//   helper for writeRestartSettings: returns true if the named parameter is one
+//   that the restart settings file overrides. Such parameters are stripped from
+//   the copy of the _settings_used.ini file to avoid duplicates, since
+//   parseParameter() picks the *first* occurrence of a parameter name.
+//
+// Arguments:
+//   pname   trimmed parameter name (as returned by readline())
+//
+// Returns:
+//   true if the parameter is overridden by the restart settings, false otherwise
+//
+//////////////////////////
+
+inline bool restartOverridesParameter(const char * pname)
+{
+	static const char * names[] = {
+		"IC generator", "template file", "particle file", "metric file",
+		"restart redshift", "cycle", "tau", "dtau", "gevolution version"
+#ifdef TENSOR_EVOLUTION
+		, "GWreadFields", "hijfile", "hijprimefile"
+#endif
+	};
+
+	for (unsigned int i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+		if (strcmp(pname, names[i]) == 0) return true;
+
+	return false;
+}
+
+//////////////////////////
 // writeRestartSettings
 //////////////////////////
 // Description:
 //   writes a settings file containing all the relevant metadata for restarting
-//   a run from a hibernation point
+//   a run from a hibernation point. The file is seeded from the
+//   _settings_used.ini file produced at initialisation (so that every setting of
+//   the original run is carried over) and the restart-relevant parameters are
+//   then overridden.
 //
-// Arguments: 
+// Arguments:
 //   sim            simulation metadata structure
 //   ic             settings for IC generation
 //   cosmo          cosmological parameter structure
@@ -32,453 +77,175 @@
 //                  if < 0 no number is associated to the hibernation point
 //
 // Returns:
-// 
+//
 //////////////////////////
 
 void writeRestartSettings(metadata & sim, icsettings & ic, cosmology & cosmo, const double a, const double tau, const double dtau, const int cycle, const int restartcount = -1)
 {
 	char buffer[2*PARAM_MAX_LENGTH+24];
+	char numtag[8];
+	char line[PARAM_MAX_LINESIZE];
+	char pname[PARAM_MAX_LENGTH];
+	char pvalue[PARAM_MAX_LENGTH];
 	FILE * outfile;
+	FILE * infile;
 	int i;
-	
+
 	if (!parallel.isRoot()) return;
-	
+
+	// express particle files are always written one-per-rank as "<base>.<rank>"
+	// (saveExpress appends the rank suffix even for a single task); the reader
+	// (ic_read) is given the first file "<base>.0" and reconstructs the per-rank
+	// names from it.
+	const char * pclsuffix = ".0";
+
+	if (restartcount >= 0)
+		sprintf(numtag, "%03d", restartcount);
+	else
+		numtag[0] = '\0';
+
 	if (restartcount >= 0)
 		sprintf(buffer, "%s%s%03d.ini", sim.restart_path, sim.basename_restart, restartcount);
 	else
 		sprintf(buffer, "%s%s.ini", sim.restart_path, sim.basename_restart);
+
 	outfile = fopen(buffer, "w");
 	if (outfile == NULL)
 	{
 		cout << " error opening file for restart settings!" << endl;
+		return;
+	}
+
+	fprintf(outfile, "# automatically generated settings for restart after hibernation ");
+	if (restartcount < 0)
+		fprintf(outfile, "due to wallclock limit ");
+	else
+		fprintf(outfile, "requested ");
+	fprintf(outfile, "at redshift z=%f\n", (1./a)-1.);
+
+	// seed the restart settings from the settings file that was actually used for
+	// the current run, stripping the parameters that we override below; everything
+	// else (cosmology, output, lightcones, hibernation schedule, ...) is carried
+	// over verbatim
+	sprintf(buffer, "%s%s_settings_used.ini", sim.output_path, sim.basename_generic);
+	infile = fopen(buffer, "r");
+	if (infile == NULL)
+	{
+		cout << " /!\\ warning: unable to open " << buffer << " to seed restart settings; restart settings will be incomplete." << endl;
 	}
 	else
 	{
-		fprintf(outfile, "# automatically generated settings for restart after hibernation ");
-		if (restartcount < 0)
-			fprintf(outfile, "due to wallclock limit ");
-		else
-			fprintf(outfile, "requested ");
-		fprintf(outfile, "at redshift z=%f\n\n", (1./a)-1.);
-		
-		fprintf(outfile, "# info related to IC generation\n\n");
-		fprintf(outfile, "IC generator       = restart\n");
-		if (restartcount >= 0)
-			sprintf(buffer, "%03d", restartcount);
-		else
-			buffer[0] = '\0';
-		fprintf(outfile, "particle file      = %s%s%s_cdm.h5", sim.restart_path, sim.basename_restart, buffer);
-		if (sim.baryon_flag)
-			fprintf(outfile, ", %s%s%s_b.h5", sim.restart_path, sim.basename_restart, buffer);
-		for (i = 0; i < cosmo.num_ncdm; i++)
+		fprintf(outfile, "# (carried over from %s, restart-relevant parameters overridden below)\n\n", buffer);
+		while (fgets(line, PARAM_MAX_LINESIZE, infile) != NULL)
 		{
-			if (sim.numpcl[1+sim.baryon_flag+i] < 1)
-				fprintf(outfile, ", /dev/null");
-			else
-				fprintf(outfile, ", %s%s%s_ncdm%d.h5", sim.restart_path, sim.basename_restart, buffer, i);
+			if (readline(line, pname, pvalue) && restartOverridesParameter(pname))
+				continue;
+			fputs(line, outfile);
 		}
-		fprintf(outfile, "\n");
-		if (sim.gr_flag > 0)
-		{
-			fprintf(outfile, "metric file        = %s%s%s_phi.h5", sim.restart_path, sim.basename_restart, buffer);
-			fprintf(outfile, ", %s%s%s_chi.h5", sim.restart_path, sim.basename_restart, buffer);
-			if (sim.vector_flag == VECTOR_PARABOLIC)
-				fprintf(outfile, ", %s%s%s_B.h5\n", sim.restart_path, sim.basename_restart, buffer);
-			else
-#ifdef CHECK_B
-				fprintf(outfile, ", %s%s%s_B_check.h5\n", sim.restart_path, sim.basename_restart, buffer);
-#else
-				fprintf(outfile, "\n");
-#endif
-		}
-		else if (sim.vector_flag == VECTOR_PARABOLIC)
-			fprintf(outfile, "metric file        = %s%s%s_B.h5\n", sim.restart_path, sim.basename_restart, buffer);
-#ifdef CHECK_B
-		else
-			fprintf(outfile, "metric file        = %s%s%s_B_check.h5\n", sim.restart_path, sim.basename_restart, buffer);
-#endif
-			
-		fprintf(outfile, "restart redshift   = %.15lf\n", (1./a) - 1.);
-		fprintf(outfile, "cycle              = %d\n", cycle);
-		fprintf(outfile, "tau                = %.15le\n", tau);
-		fprintf(outfile, "dtau               = %.15le\n", dtau);
-		fprintf(outfile, "gevolution version = %g\n\n", GEVOLUTION_VERSION);
-		fprintf(outfile, "seed               = %d\n", ic.seed);
-		if (ic.flags & ICFLAG_KSPHERE)
-			fprintf(outfile, "k-domain           = sphere\n");
-		else
-			fprintf(outfile, "k-domain           = cube\n");
-		fprintf(outfile, "\n\n# primordial power spectrum\n\n");
-		fprintf(outfile, "k_pivot = %lg\n", ic.k_pivot);
-		fprintf(outfile, "A_s     = %lg\n", ic.A_s);
-		fprintf(outfile, "n_s     = %lg\n", ic.n_s);
-		fprintf(outfile, "\n\n# cosmological parameters\n\n");
-		fprintf(outfile, "h         = %lg\n", cosmo.h);
-		fprintf(outfile, "Omega_cdm = %.15le\n", cosmo.Omega_cdm);
-		fprintf(outfile, "Omega_b   = %.15le\n", cosmo.Omega_b);
-		fprintf(outfile, "Omega_g   = %.15le\n", cosmo.Omega_g);
-		fprintf(outfile, "Omega_ur  = %.15le\n", cosmo.Omega_ur);
-		if (cosmo.Omega_fld > 0.)
-		{
-			fprintf(outfile, "Omega_fld = %.15le\n", cosmo.Omega_fld);
-			fprintf(outfile, "w0_fld    = %lg\n", cosmo.w0_fld);
-			fprintf(outfile, "wa_fld    = %lg\n", cosmo.wa_fld);
-			if (sim.fluid_flag > 0)
-				fprintf(outfile, "cs2_fld   = %lg\n", cosmo.cs2_fld);
-		}
-		fprintf(outfile, "N_ncdm    = %d\n", cosmo.num_ncdm);
-		if (cosmo.num_ncdm > 0)
-		{
-			fprintf(outfile, "m_cdm     = ");
-			for (i = 0; i < cosmo.num_ncdm - 1; i++)
-				fprintf(outfile, "%9lf, ", cosmo.m_ncdm[i]);
-			fprintf(outfile, "%9lf\n", cosmo.m_ncdm[i]);
-			fprintf(outfile, "T_cdm     = ");
-			for (i = 0; i < cosmo.num_ncdm - 1; i++)
-				fprintf(outfile, "%9lf, ", cosmo.T_ncdm[i]);
-			fprintf(outfile, "%9lf\n", cosmo.T_ncdm[i]);
-			fprintf(outfile, "deg_cdm   = ");
-			for (i = 0; i < cosmo.num_ncdm - 1; i++)
-				fprintf(outfile, "%lf, ", cosmo.deg_ncdm[i]);
-			fprintf(outfile, "%lg\n", cosmo.deg_ncdm[i]);
-		}
-		fprintf(outfile, "\n\n# simulation settings\n\n");
-		if (sim.baryon_flag > 0)
-			fprintf(outfile, "baryon treatment    = sample\n");
-		if (sim.radiation_flag > 0)
-		{
-			fprintf(outfile, "radiation treatment = CLASS\n");
-			fprintf(outfile, "switch delta_rad    = %lf\n", sim.z_switch_deltarad);
-			if (cosmo.num_ncdm > 0)
-			{
-				fprintf(outfile, "switch delta_ncdm   = ");
-				for (i = 0; i < cosmo.num_ncdm - 1; i++)
-					fprintf(outfile, "%lf, ", sim.z_switch_deltancdm[i]);
-				fprintf(outfile, "%lf\n", sim.z_switch_deltancdm[i]);
-			}
-			fprintf(outfile, "switch linear chi   = %lf\n", sim.z_switch_linearchi);
-		}
-		if (sim.fluid_flag > 0)
-			fprintf(outfile, "fluid treatment     = CLASS\n");
-		if (sim.gr_flag > 0)
-			fprintf(outfile, "gravity theory      = GR\n");
-		else
-			fprintf(outfile, "gravity theory      = N\n");
-		if (sim.vector_flag == VECTOR_ELLIPTIC)
-			fprintf(outfile, "vector method       = elliptic\n");
-		else
-			fprintf(outfile, "vector method       = parabolic\n");
-		fprintf(outfile, "\ninitial redshift    = %lg\n", sim.z_in);
-		fprintf(outfile, "boxsize             = %lg\n", sim.boxsize);
-		fprintf(outfile, "Ngrid               = %d\n", sim.numpts);
-		fprintf(outfile, "Courant factor      = %lg\n", sim.Cf);
-		fprintf(outfile, "time step limit     = %lg\n", sim.steplimit);
-		if (cosmo.num_ncdm > 0)
-			fprintf(outfile, "move limit          = %lg\n", sim.movelimit);
-		fprintf(outfile, "\n\n# output\n\n");
-		fprintf(outfile, "output path         = %s\n", sim.output_path);
-		fprintf(outfile, "generic file base   = %s\n", sim.basename_generic);
-		fprintf(outfile, "snapshot file base  = %s\n", sim.basename_snapshot);
-		fprintf(outfile, "Pk file base        = %s\n", sim.basename_pk);
-		fprintf(outfile, "lightcone file base = %s\n", sim.basename_lightcone);
-		if (sim.num_snapshot > 0)
-		{
-			fprintf(outfile, "snapshot redshifts  = ");
-			for (i = 0; i < sim.num_snapshot - 1; i++)
-				fprintf(outfile, "%lg, ", sim.z_snapshot[i]);
-			fprintf(outfile, "%lg\n", sim.z_snapshot[i]);
-		}
-		if (sim.out_snapshot)
-		{
-			fprintf(outfile, "snapshot outputs    = ");
-			if(sim.out_snapshot & MASK_PHI)
-			{
-				fprintf(outfile, "phi");
-				if (sim.out_snapshot > MASK_CHI)
-					fprintf(outfile, ", ");
-			}
-			if(sim.out_snapshot & MASK_CHI)
-			{
-				fprintf(outfile, "chi");
-				if (sim.out_snapshot > MASK_POT)
-					fprintf(outfile, ", ");
-			}
-			if(sim.out_snapshot & MASK_POT)
-			{
-				fprintf(outfile, "psiN");
-				if (sim.out_snapshot > MASK_B)
-					fprintf(outfile, ", ");
-			}
-			if(sim.out_snapshot & MASK_B)
-			{
-				fprintf(outfile, "B");
-				if (sim.out_snapshot > MASK_T00)
-					fprintf(outfile, ", ");
-			}
-			if(sim.out_snapshot & MASK_T00)
-			{
-				fprintf(outfile, "T00");
-				if (sim.out_snapshot > MASK_TIJ)
-					fprintf(outfile, ", ");
-			}
-			if(sim.out_snapshot & MASK_TIJ)
-			{
-				fprintf(outfile, "Tij");
-				if (sim.out_snapshot > MASK_RBARE)
-					fprintf(outfile, ", ");
-			}
-			if(sim.out_snapshot & MASK_RBARE)
-			{
-				fprintf(outfile, "rhoN");
-				if (sim.out_snapshot > MASK_HIJ)
-					fprintf(outfile, ", ");
-			}
-			if(sim.out_snapshot & MASK_HIJ)
-			{
-				fprintf(outfile, "hij");
-				if (sim.out_snapshot > MASK_P)
-					fprintf(outfile, ", ");
-			}
-			if(sim.out_snapshot & MASK_P)
-			{
-				fprintf(outfile, "p");
-				if (sim.out_snapshot > MASK_GADGET)
-					fprintf(outfile, ", ");
-			}
-			if(sim.out_snapshot & MASK_GADGET)
-			{
-				if (sim.out_snapshot & MASK_MULTI)
-				{
-					fprintf(outfile, "multi-Gadget2");
-					if (sim.out_snapshot - MASK_MULTI > MASK_PCLS)
-						fprintf(outfile, ", ");
-				}
-				else
-				{
-					fprintf(outfile, "Gadget2");
-					if (sim.out_snapshot > MASK_PCLS)
-						fprintf(outfile, ", ");
-				}
-			}
-			if(sim.out_snapshot & MASK_PCLS)
-			{
-				fprintf(outfile, "particles");
-				if (((sim.out_snapshot & MASK_MULTI) == 0 && sim.out_snapshot > MASK_DELTA) || sim.out_snapshot - MASK_MULTI > MASK_DELTA)
-					fprintf(outfile, ", ");
-			}
-			if(sim.out_snapshot & MASK_DELTA)
-			{
-				fprintf(outfile, "delta");
-				if (((sim.out_snapshot & MASK_MULTI) == 0 && sim.out_snapshot > MASK_DBARE) || sim.out_snapshot - MASK_MULTI > MASK_DBARE)
-					fprintf(outfile, ", ");
-			}
-			if(sim.out_snapshot & MASK_DBARE)
-			{
-				fprintf(outfile, "deltaN");
-			}
-			fprintf(outfile, "\n");
-		}
-		if (sim.out_snapshot & MASK_GADGET)
-		{
-			fprintf(outfile, "tracer factor       = %d", sim.tracer_factor[0]);
-			for (i = 1; i <= sim.baryon_flag + cosmo.num_ncdm; i++)
-				fprintf(outfile, ", %d", sim.tracer_factor[i]);
-			fprintf(outfile, "\n");
-		}
-		if (sim.downgrade_factor > 1)
-			fprintf(outfile, "downgrade factor    = %d", sim.downgrade_factor);
-		if (sim.num_pk > 0)
-		{
-			fprintf(outfile, "Pk redshifts        = ");
-			for (i = 0; i < sim.num_pk - 1; i++)
-				fprintf(outfile, "%lg, ", sim.z_pk[i]);
-			fprintf(outfile, "%lg\n", sim.z_pk[i]);
-		}
-		if (sim.out_pk)
-		{
-			fprintf(outfile, "Pk outputs          = ");
-			if(sim.out_pk & MASK_PHI)
-			{
-				fprintf(outfile, "phi");
-				if (sim.out_pk > MASK_CHI)
-					fprintf(outfile, ", ");
-			}
-			if(sim.out_pk & MASK_CHI)
-			{
-				fprintf(outfile, "chi");
-				if (sim.out_pk > MASK_POT)
-					fprintf(outfile, ", ");
-			}
-			if(sim.out_pk & MASK_POT)
-			{
-				fprintf(outfile, "psiN");
-				if (sim.out_pk > MASK_B)
-					fprintf(outfile, ", ");
-			}
-			if(sim.out_pk & MASK_B)
-			{
-				fprintf(outfile, "B");
-				if (sim.out_pk > MASK_T00)
-					fprintf(outfile, ", ");
-			}
-			if(sim.out_pk & MASK_T00)
-			{
-				fprintf(outfile, "T00");
-				if (sim.out_pk > MASK_TIJ)
-					fprintf(outfile, ", ");
-			}
-			if(sim.out_pk & MASK_TIJ)
-			{
-				fprintf(outfile, "Tij");
-				if (sim.out_pk > MASK_RBARE)
-					fprintf(outfile, ", ");
-			}
-			if(sim.out_pk & MASK_RBARE)
-			{
-				fprintf(outfile, "rhoN");
-				if (sim.out_pk > MASK_HIJ)
-					fprintf(outfile, ", ");
-			}
-			if(sim.out_pk & MASK_HIJ)
-			{
-				fprintf(outfile, "hij");
-				if (sim.out_pk > MASK_P)
-					fprintf(outfile, ", ");
-			}
-			if(sim.out_pk & MASK_P)
-			{
-				fprintf(outfile, "p");
-				if (sim.out_pk > MASK_XSPEC)
-					fprintf(outfile, ", ");
-			}
-			if(sim.out_pk & MASK_XSPEC)
-			{
-				fprintf(outfile, "X-spectra");
-				if (sim.out_pk > MASK_DELTA)
-					fprintf(outfile, ", ");
-			}
-			if(sim.out_pk & MASK_DELTA)
-			{
-				fprintf(outfile, "delta");
-				if (sim.out_pk > MASK_DBARE)
-					fprintf(outfile, ", ");
-			}
-			if(sim.out_pk & MASK_DBARE)
-			{
-				fprintf(outfile, "deltaN");
-			}
-			fprintf(outfile, "\n");
-		}
-		fprintf(outfile, "Pk bins             = %d\n", sim.numbins);
-		if (sim.num_lightcone == 1)
-		{
-			fprintf(outfile, "lightcone vertex    = %lg, %lg, %lg\n", sim.lightcone[0].vertex[0], sim.lightcone[0].vertex[1], sim.lightcone[0].vertex[2]);
-			fprintf(outfile, "lightcone outputs   = ");
-			if(sim.out_lightcone[0] & MASK_PHI)
-			{
-				fprintf(outfile, "phi");
-				if (sim.out_lightcone[0] > MASK_CHI)
-					fprintf(outfile, ", ");
-			}
-			if(sim.out_lightcone[0] & MASK_CHI)
-			{
-				fprintf(outfile, "chi");
-				if (sim.out_lightcone[0] > MASK_POT)
-					fprintf(outfile, ", ");
-			}
-			if(sim.out_lightcone[0] & MASK_B)
-			{
-				fprintf(outfile, "B");
-				if (sim.out_lightcone[0] > MASK_T00)
-					fprintf(outfile, ", ");
-			}
-			if(sim.out_lightcone[0] & MASK_HIJ)
-			{
-				fprintf(outfile, "hij");
-				if (sim.out_lightcone[0] > MASK_P)
-					fprintf(outfile, ", ");
-			}
-			if(sim.out_lightcone[0] & MASK_GADGET)
-				fprintf(outfile, "Gadget2");
-			fprintf(outfile, "\n");
-			if (sim.lightcone[0].opening > -1.)
-				fprintf(outfile, "lightcone opening half-angle = %lg\n", acos(sim.lightcone[0].opening) * 180. / M_PI);
-			fprintf(outfile, "lightcone distance  = %lg, %lg\n", sim.lightcone[0].distance[1], sim.lightcone[0].distance[0]);
-			if (sim.lightcone[0].z != 0)
-				fprintf(outfile, "lightcone redshift  = %lg\n", sim.lightcone[0].z);
-			fprintf(outfile, "lightcone direction = %.15le, %.15le, %.15le\n", sim.lightcone[0].direction[0], sim.lightcone[0].direction[1], sim.lightcone[0].direction[2]);
-			fprintf(outfile, "lightcone covering  = %lg\n", sim.covering[0]);
-			if (sim.Nside[0][0] != sim.Nside[0][1])
-				fprintf(outfile, "lightcone Nside     = %d, %d\n", sim.Nside[0][0], sim.Nside[0][1]);
-			else
-				fprintf(outfile, "lightcone Nside     = %d\n", sim.Nside[0][0]);
-			fprintf(outfile, "lightcone pixel factor = %lg\n", sim.pixelfactor[0]);
-			fprintf(outfile, "lightcone shell factor = %lg\n", sim.shellfactor[0]);	
-		}
-		else if (sim.num_lightcone > 1)
-		{
-			for (i = 0; i < sim.num_lightcone; i++)
-			{
-				fprintf(outfile, "lightcone %d vertex    = %lg, %lg, %lg\n", i, sim.lightcone[0].vertex[0], sim.lightcone[0].vertex[1], sim.lightcone[0].vertex[2]);
-				fprintf(outfile, "lightcone %d outputs   = ", i);
-				if(sim.out_lightcone[0] & MASK_PHI)
-				{
-					fprintf(outfile, "phi");
-					if (sim.out_lightcone[0] > MASK_CHI)
-						fprintf(outfile, ", ");
-				}
-				if(sim.out_lightcone[0] & MASK_CHI)
-				{
-					fprintf(outfile, "chi");
-					if (sim.out_lightcone[0] > MASK_POT)
-						fprintf(outfile, ", ");
-				}
-				if(sim.out_lightcone[0] & MASK_B)
-				{
-					fprintf(outfile, "B");
-					if (sim.out_lightcone[0] > MASK_T00)
-						fprintf(outfile, ", ");
-				}
-				if(sim.out_lightcone[0] & MASK_HIJ)
-				{
-					fprintf(outfile, "hij");
-					if (sim.out_lightcone[0] > MASK_P)
-						fprintf(outfile, ", ");
-				}
-				if(sim.out_lightcone[0] & MASK_GADGET)
-					fprintf(outfile, "Gadget2");
-				fprintf(outfile, "\n");
-				if (sim.lightcone[0].opening > -1.)
-					fprintf(outfile, "lightcone %d opening half-angle = %lg\n", i, acos(sim.lightcone[0].opening) * 180. / M_PI);
-				fprintf(outfile, "lightcone %d distance  = %lg, %lg\n", i, sim.lightcone[0].distance[1], sim.lightcone[0].distance[0]);
-				if (sim.lightcone[0].z != 0)
-					fprintf(outfile, "lightcone %d redshift  = %lg\n", i, sim.lightcone[0].z);
-				fprintf(outfile, "lightcone %d direction = %.15le, %.15le, %.15le\n", i, sim.lightcone[0].direction[0], sim.lightcone[0].direction[1], sim.lightcone[0].direction[2]);
-				fprintf(outfile, "lightcone %d covering  = %lg\n", i, sim.covering[0]);
-				if (sim.Nside[0][0] != sim.Nside[0][1])
-					fprintf(outfile, "lightcone %d Nside     = %d, %d\n", i, sim.Nside[0][0], sim.Nside[0][1]);
-				else
-					fprintf(outfile, "lightcone %d Nside     = %d\n", i, sim.Nside[0][0]);
-				fprintf(outfile, "lightcone %d pixel factor = %lg\n", i, sim.pixelfactor[0]);
-				fprintf(outfile, "lightcone %d shell factor = %lg\n", i, sim.shellfactor[0]);	
-			}
-		}
-		fprintf(outfile, "\n\n# hibernations\n\n");
-		if (sim.num_restart > 0)
-		{
-			fprintf(outfile, "hibernation redshifts       = ");
-			for (i = 0; i < sim.num_restart - 1; i++)
-				fprintf(outfile, "%lg, ", sim.z_restart[i]);
-			fprintf(outfile, "%lg\n", sim.z_restart[i]);
-		}
-		if (sim.wallclocklimit > 0.)
-			fprintf(outfile, "hibernation wallclock limit = %lg\n", sim.wallclocklimit);
-		if (sim.restart_path[0] != '\0')
-			fprintf(outfile, "hibernation path            = %s\n", sim.restart_path);
-		fprintf(outfile, "hibernation file base       = %s\n", sim.basename_restart);
-			
-		fclose(outfile);
+		fclose(infile);
 	}
+
+	fprintf(outfile, "\n\n# ==== restart-specific parameters (auto-generated) ====\n\n");
+
+	// "express" selects the Gadget-2 reader that loads raw code units (no unit
+	// conversion), matching what saveExpress wrote
+	fprintf(outfile, "IC generator       = express\n");
+
+	fprintf(outfile, "particle file      = %s%s%s_cdm%s", sim.restart_path, sim.basename_restart, numtag, pclsuffix);
+	if (sim.baryon_flag)
+		fprintf(outfile, ", %s%s%s_b%s", sim.restart_path, sim.basename_restart, numtag, pclsuffix);
+	for (i = 0; i < cosmo.num_ncdm; i++)
+	{
+		if (sim.numpcl[1+sim.baryon_flag+i] < 1)
+			fprintf(outfile, ", /dev/null");
+		else
+			fprintf(outfile, ", %s%s%s_ncdm%d%s", sim.restart_path, sim.basename_restart, numtag, i, pclsuffix);
+	}
+	fprintf(outfile, "\n");
+
+	if (sim.gr_flag > 0)
+	{
+		fprintf(outfile, "metric file        = %s%s%s_phi.h5", sim.restart_path, sim.basename_restart, numtag);
+		fprintf(outfile, ", %s%s%s_chi.h5", sim.restart_path, sim.basename_restart, numtag);
+		if (sim.vector_flag == VECTOR_PARABOLIC)
+			fprintf(outfile, ", %s%s%s_B.h5\n", sim.restart_path, sim.basename_restart, numtag);
+		else
+#ifdef CHECK_B
+			fprintf(outfile, ", %s%s%s_B_check.h5\n", sim.restart_path, sim.basename_restart, numtag);
+#else
+			fprintf(outfile, "\n");
+#endif
+	}
+	else if (sim.vector_flag == VECTOR_PARABOLIC)
+		fprintf(outfile, "metric file        = %s%s%s_B.h5\n", sim.restart_path, sim.basename_restart, numtag);
+#ifdef CHECK_B
+	else
+		fprintf(outfile, "metric file        = %s%s%s_B_check.h5\n", sim.restart_path, sim.basename_restart, numtag);
+#endif
+
+	fprintf(outfile, "restart redshift   = %.15lf\n", (1./a) - 1.);
+	fprintf(outfile, "cycle              = %d\n", cycle);
+	fprintf(outfile, "tau                = %.15le\n", tau);
+	fprintf(outfile, "dtau               = %.15le\n", dtau);
+	fprintf(outfile, "gevolution version = %g\n", GEVOLUTION_VERSION);
+
+#ifdef TENSOR_EVOLUTION
+	// dynamical tensor degrees of freedom: force reading hij/hij' from the snapshots
+	fprintf(outfile, "GWreadFields       = 1\n");
+	fprintf(outfile, "hijfile            = %s%s%s_hij.h5\n", sim.restart_path, sim.basename_restart, numtag);
+	fprintf(outfile, "hijprimefile       = %s%s%s_hijprime.h5\n", sim.restart_path, sim.basename_restart, numtag);
+#endif
+
+	fclose(outfile);
+}
+
+
+//////////////////////////
+// hibernateSaveParticles
+//////////////////////////
+// Description:
+//   writes a single particle species to a Gadget2 file as part of a hibernation
+//   point. The full set of particles is stored (tracer factor 1) in their raw
+//   phase-space state (dtau_pos = dtau_vel = 0, i.e. no drift/kick), so that the
+//   restart read reproduces the exact leapfrog state.
+//
+// Arguments:
+//   pcls           pointer to particle handler
+//   filebase       base name of the Gadget2 file ("<base>" or "<base>.<rank>")
+//   numpcl         total number of particles of this species
+//   Omega_species  density parameter of this species (only used for the Gadget2
+//                  mass entry; the restart recomputes the mass from cosmology)
+//   sim            simulation metadata structure
+//   cosmo          cosmological parameter structure
+//   a              scale factor
+//
+//////////////////////////
+
+inline void hibernateSaveParticles(perfParticles_gevolution<part_simple,part_simple_info> * pcls, const string & filebase, const long numpcl, const double Omega_species, metadata & sim, cosmology & cosmo, const double a)
+{
+	gadget2_header hdr;
+
+	memset(&hdr, 0, sizeof(hdr));
+	hdr.num_files = parallel.size();
+	hdr.Omega0 = cosmo.Omega_m;
+	hdr.OmegaLambda = cosmo.Omega_Lambda;
+	hdr.HubbleParam = cosmo.h;
+	hdr.BoxSize = sim.boxsize / GADGET_LENGTH_CONVERSION;
+	hdr.time = a;
+	hdr.redshift = (1. / a) - 1.;
+	// npart[1] is the per-file count; for a single file it must be the total, for
+	// the multi-file (one-per-rank) case saveGadget2 overwrites it with the local
+	// count. npartTotal[1] / npartTotalHW[1] always hold the grand total.
+	hdr.npart[1] = (uint32_t) (numpcl % (1ll << 32));
+	hdr.npartTotal[1] = (uint32_t) (numpcl % (1ll << 32));
+	hdr.npartTotalHW[1] = (uint32_t) (numpcl / (1ll << 32));
+	hdr.mass[1] = (double) C_RHO_CRIT * Omega_species * sim.boxsize * sim.boxsize * sim.boxsize / (double) numpcl / GADGET_MASS_CONVERSION;
+
+	// express format: a valid Gadget-2 snapshot whose positions/momenta are stored
+	// in raw code units (no drift/kick, no unit conversion), so the restart read
+	// reproduces the exact leapfrog state while the files stay readable by generic
+	// Gadget tools (python, ...).
+	pcls->saveExpress(filebase, hdr);
 }
 
 
@@ -488,7 +255,7 @@ void writeRestartSettings(metadata & sim, icsettings & ic, cosmology & cosmo, co
 // Description:
 //   creates a hibernation point by writing snapshots of the simulation data and metadata
 //
-// Arguments: 
+// Arguments:
 //   sim            simulation metadata structure
 //   ic             settings for IC generation
 //   cosmo          cosmological parameter structure
@@ -506,10 +273,14 @@ void writeRestartSettings(metadata & sim, icsettings & ic, cosmology & cosmo, co
 //                  if < 0 no number is associated to the hibernation point
 //
 // Returns:
-// 
+//
 //////////////////////////
 
-void hibernate(metadata & sim, icsettings & ic, cosmology & cosmo, Particles<part_simple,part_simple_info,part_simple_dataType> * pcls_cdm, Particles<part_simple,part_simple_info,part_simple_dataType> * pcls_b, Particles<part_simple,part_simple_info,part_simple_dataType> * pcls_ncdm, Field<Real> & phi, Field<Real> & chi, Field<Real> & Bi, const double a, const double tau, const double dtau, const int cycle, const int restartcount = -1)
+void hibernate(metadata & sim, icsettings & ic, cosmology & cosmo, perfParticles_gevolution<part_simple,part_simple_info> * pcls_cdm, perfParticles_gevolution<part_simple,part_simple_info> * pcls_b, perfParticles_gevolution<part_simple,part_simple_info> * pcls_ncdm, Field<Real> & phi, Field<Real> & chi, Field<Real> & Bi,
+#ifdef TENSOR_EVOLUTION
+	Field<Cplx> & hijFT, Field<Cplx> & hijprimeFT,
+#endif
+	const double a, const double tau, const double dtau, const int cycle, const int restartcount = -1)
 {
 	string h5filename;
 	char buffer[16];
@@ -526,7 +297,7 @@ void hibernate(metadata & sim, icsettings & ic, cosmology & cosmo, Particles<par
 	}
 
 	writeRestartSettings(sim, ic, cosmo, a, tau, dtau, cycle, restartcount);
-	
+
 #ifndef CHECK_B
 	if (sim.vector_flag == VECTOR_PARABOLIC)
 #endif
@@ -536,79 +307,36 @@ void hibernate(metadata & sim, icsettings & ic, cosmology & cosmo, Particles<par
 		Bi(x,1) /= a * a * sim.numpts;
 		Bi(x,2) /= a * a * sim.numpts;
 	}
-	
-#ifdef EXTERNAL_IO
-	while (ioserver.openOstream()== OSTREAM_FAIL);
-	
-	pcls_cdm->saveHDF5_server_open(h5filename + "_cdm");
+
+	// ---- particles (Gadget2; this version has no HDF5 particle I/O) ----
+	hibernateSaveParticles(pcls_cdm, h5filename + "_cdm", sim.numpcl[0], (sim.baryon_flag ? cosmo.Omega_cdm : (cosmo.Omega_cdm + cosmo.Omega_b)), sim, cosmo, a);
 	if (sim.baryon_flag)
-		pcls_b->saveHDF5_server_open(h5filename + "_b");
+		hibernateSaveParticles(pcls_b, h5filename + "_b", sim.numpcl[1], cosmo.Omega_b, sim, cosmo, a);
 	for (i = 0; i < cosmo.num_ncdm; i++)
 	{
 		if (sim.numpcl[1+sim.baryon_flag+i] < 1) continue;
 		sprintf(buffer, "%d", i);
-		pcls_ncdm[i].saveHDF5_server_open(h5filename + "_ncdm" + buffer);
-	}
-		
-	if (sim.gr_flag > 0)
-	{
-		phi.saveHDF5_server_open(h5filename + "_phi");
-		chi.saveHDF5_server_open(h5filename + "_chi");
-	}
-	
-	if (sim.vector_flag == VECTOR_PARABOLIC)
-		Bi.saveHDF5_server_open(h5filename + "_B");
-#ifdef CHECK_B
-	else
-		Bi.saveHDF5_server_open(h5filename + "_B_check");
-#endif
-		
-	pcls_cdm->saveHDF5_server_write();
-	if (sim.baryon_flag)
-		pcls_b->saveHDF5_server_write();
-	for (i = 0; i < cosmo.num_ncdm; i++)
-	{
-		if (sim.numpcl[1+sim.baryon_flag+i] < 1) continue;
-		pcls_ncdm[i].saveHDF5_server_write();
-	}
-		
-	if (sim.gr_flag > 0)
-	{
-		phi.saveHDF5_server_write(NUMBER_OF_IO_FILES);
-		chi.saveHDF5_server_write(NUMBER_OF_IO_FILES);
+		hibernateSaveParticles(&pcls_ncdm[i], h5filename + "_ncdm" + buffer, sim.numpcl[1+sim.baryon_flag+i], cosmo.Omega_ncdm[i], sim, cosmo, a);
 	}
 
-#ifndef CHECK_B
-	if (sim.vector_flag == VECTOR_PARABOLIC)
-#endif
-		Bi.saveHDF5_server_write(NUMBER_OF_IO_FILES);
-		
-	ioserver.closeOstream();
-#else
-	pcls_cdm->saveHDF5(h5filename + "_cdm", 1);
-	if (sim.baryon_flag)
-		pcls_b->saveHDF5(h5filename + "_b", 1);
-	for (i = 0; i < cosmo.num_ncdm; i++)
-	{
-		if (sim.numpcl[1+sim.baryon_flag+i] < 1) continue;
-		sprintf(buffer, "%d", i);
-		pcls_ncdm[i].saveHDF5(h5filename + "_ncdm" + buffer, 1);
-	}
-		
+	// ---- fields ----
 	if (sim.gr_flag > 0)
 	{
 		phi.saveHDF5(h5filename + "_phi.h5");
 		chi.saveHDF5(h5filename + "_chi.h5");
 	}
-	
+
 	if (sim.vector_flag == VECTOR_PARABOLIC)
 		Bi.saveHDF5(h5filename + "_B.h5");
 #ifdef CHECK_B
 	else
 		Bi.saveHDF5(h5filename + "_B_check.h5");
 #endif
+
+#ifdef TENSOR_EVOLUTION
+	hijFT.saveHDF5(h5filename + "_hij.h5");
+	hijprimeFT.saveHDF5(h5filename + "_hijprime.h5");
 #endif
 }
 
 #endif
-

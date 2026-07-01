@@ -69,6 +69,7 @@
 #define MASK_DBARE  8192
 #define MASK_MULTI  16384
 #define MASK_VEL    32768
+#define MASK_HIJPRIMENORM 65536
 
 #define ICFLAG_CORRECT_DISPLACEMENT 1
 #define ICFLAG_KSPHERE              2
@@ -272,6 +273,11 @@ struct icsettings
 	char metricfile[3][PARAM_MAX_LENGTH];
 	char densityfile[2][PARAM_MAX_LENGTH];
 	char velocityfile[2][PARAM_MAX_LENGTH];
+#ifdef TENSOR_EVOLUTION
+	int GWreadFields;
+	char hijfile[PARAM_MAX_LENGTH];
+	char hijprimefile[PARAM_MAX_LENGTH];
+#endif
 	double restart_tau;
 	double restart_dtau;
 	double restart_version;

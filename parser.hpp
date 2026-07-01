@@ -785,6 +785,7 @@ bool knownFieldSpecifier(const char * item)
 		|| strcmp(item, "Tij") == 0
 		|| strcmp(item, "rho_N") == 0 || strcmp(item, "rhoN") == 0
 		|| strcmp(item, "hij") == 0 || strcmp(item, "GW") == 0
+		|| strcmp(item, "hij_prime_norm") == 0 || strcmp(item, "HIJ_PRIME_NORM") == 0
 		|| strcmp(item, "Gadget") == 0 || strcmp(item, "Gadget2") == 0 || strcmp(item, "gadget") == 0 || strcmp(item, "gadget2") == 0
 		|| strcmp(item, "multi-Gadget") == 0 || strcmp(item, "multi-Gadget2") == 0 || strcmp(item, "multi-gadget") == 0 || strcmp(item, "multi-gadget2") == 0
 		|| strcmp(item, "Particles") == 0 || strcmp(item, "particles") == 0 || strcmp(item, "pcls") == 0 || strcmp(item, "part") == 0
@@ -850,6 +851,8 @@ bool parseFieldSpecifiers(parameter * & params, const int numparam, const char *
 					pvalue |= MASK_RBARE;
 				else if (strcmp(item, "hij") == 0 || strcmp(item, "GW") == 0)
 					pvalue |= MASK_HIJ;
+				else if (strcmp(item, "hij_prime_norm") == 0 || strcmp(item, "HIJ_PRIME_NORM") == 0)
+					pvalue |= MASK_HIJPRIMENORM;
 				else if (strcmp(item, "Gadget") == 0 || strcmp(item, "Gadget2") == 0 || strcmp(item, "gadget") == 0 || strcmp(item, "gadget2") == 0)
 					pvalue |= MASK_GADGET;
 				else if (strcmp(item, "multi-Gadget") == 0 || strcmp(item, "multi-Gadget2") == 0 || strcmp(item, "multi-gadget") == 0 || strcmp(item, "multi-gadget2") == 0)
@@ -890,6 +893,8 @@ bool parseFieldSpecifiers(parameter * & params, const int numparam, const char *
 				pvalue |= MASK_RBARE;
 			else if (strcmp(start, "hij") == 0 || strcmp(start, "GW") == 0)
 				pvalue |= MASK_HIJ;
+			else if (strcmp(start, "hij_prime_norm") == 0 || strcmp(start, "HIJ_PRIME_NORM") == 0)
+				pvalue |= MASK_HIJPRIMENORM;
 			else if (strcmp(start, "Gadget") == 0 || strcmp(start, "Gadget2") == 0 || strcmp(start, "gadget") == 0 || strcmp(start, "gadget2") == 0)
 				pvalue |= MASK_GADGET;
 			else if (strcmp(start, "multi-Gadget") == 0 || strcmp(start, "multi-Gadget2") == 0 || strcmp(start, "multi-gadget") == 0 || strcmp(start, "multi-gadget2") == 0)
@@ -969,7 +974,12 @@ int parseMetadata(parameter * & params, const int numparam, metadata & sim, cosm
 	ic.restart_tau = 0.;
 	ic.restart_dtau = 0.;
 	ic.restart_version = -1.;
-	
+#ifdef TENSOR_EVOLUTION
+	ic.GWreadFields = 0;
+	ic.hijfile[0] = '\0';
+	ic.hijprimefile[0] = '\0';
+#endif
+
 	parseParameter(params, numparam, "seed", ic.seed);
 	
 	if (parseParameter(params, numparam, "IC generator", par_string))
@@ -1267,6 +1277,11 @@ int parseMetadata(parameter * & params, const int numparam, metadata & sim, cosm
 		for (i = 0; i < 3; i++)
 			pptr[i] = ic.metricfile[i];
 		parseParameter(params, numparam, "metric file", pptr, i);
+#ifdef TENSOR_EVOLUTION
+		parseParameter(params, numparam, "GWreadFields", ic.GWreadFields);
+		parseParameter(params, numparam, "hijfile", ic.hijfile);
+		parseParameter(params, numparam, "hijprimefile", ic.hijprimefile);
+#endif
 		if (parseParameter(params, numparam, "gevolution version", ic.restart_version))
 		{
 			if (ic.restart_version - GEVOLUTION_VERSION > 0.0001)
@@ -2134,11 +2149,6 @@ int parseMetadata(parameter * & params, const int numparam, metadata & sim, cosm
 		if (!isfinite(sim.z_switch_Bncdm[i]) || sim.z_switch_Bncdm[i] <= -1.)
 			addParameterError(params, numparam, "switch B ncdm", "all active-species redshifts must be finite and greater than -1");
 	}
-
-	if (sim.num_restart > 0)
-		addParameterError(params, numparam, "hibernation redshifts", "GPU hibernation output is not implemented; continuing would falsely report a checkpoint");
-	if (sim.wallclocklimit > 0.)
-		addParameterError(params, numparam, "hibernation wallclock limit", "GPU hibernation output is not implemented; reaching this limit would stop without a checkpoint");
 
 	for (i = 0; i < sim.num_lightcone; i++)
 	{

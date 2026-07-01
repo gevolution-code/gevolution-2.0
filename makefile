@@ -1,158 +1,72 @@
-# Portable GNU Make entry point for gevolution 2.0.
-#
-# Configuration precedence:
-#   1. config/defaults.mk
-#   2. CONFIG (config/local.mk by default, if present)
-#   3. command-line overrides
+# programming environment
+COMPILER     := nvcc
+#INCLUDE      := -I. -I/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/hdf5-1.14.5-iyjsbrml3dbr3l7cp65dgeclqlyfcdnn/include -I/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/gsl-2.8-pjzdxlsptkmjuvnrxif5x7ellp7rab3c/include -I/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/fftw-3.3.10-3yw4wbosrsa2257uitrgpge6a3mfw7ck/include -I../../LATfield2/LATa100 #-I/users/adamek/local_arm/include -I../class_public/include -I../class_public/external/HyRec2020 -I../class_public/external/RecfastCLASS -I../class_public/external/heating # -I/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/cuda-12.6.2-csv6jo3czkfdk46ep7pmm6ipo3yjlbjj/include  # add the path to LATfield2 and other libraries (if necessary)
+#LIB          := -L/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/hdf5-1.14.5-iyjsbrml3dbr3l7cp65dgeclqlyfcdnn/lib -L/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/gsl-2.8-pjzdxlsptkmjuvnrxif5x7ellp7rab3c/lib -L/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/fftw-3.3.10-3yw4wbosrsa2257uitrgpge6a3mfw7ck/lib -lfftw3f -lm -lcufft -lhdf5 -lgsl -lgslcblas # -lchealpix -lcfitsio -lclass -lcufft # -L/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/cuda-12.6.2-csv6jo3czkfdk46ep7pmm6ipo3yjlbjj/lib64 -lcufft -lcufftw
+INCLUDE      := -I. -I/user-environment/linux-neoverse_v2/hdf5-1.14.6-cobrby6yjq7vyf4x7m6wy7aoembrddul/include -I/user-environment/linux-neoverse_v2/gsl-2.8-63ctjbspwlt5rsrkpws4rtl7im3r3iqp/include -I/user-environment/linux-neoverse_v2/fftw-3.3.10-5pionfb6nd6vcu55hgygxbb6tzitbbf2/include -I../LATa100new
+LIB          := -L/user-environment/linux-neoverse_v2/hdf5-1.14.6-cobrby6yjq7vyf4x7m6wy7aoembrddul/lib -L/user-environment/linux-neoverse_v2/gsl-2.8-63ctjbspwlt5rsrkpws4rtl7im3r3iqp/lib -L/user-environment/linux-neoverse_v2/fftw-3.3.10-5pionfb6nd6vcu55hgygxbb6tzitbbf2/lib -lfftw3f  -lm -lhdf5 -lgsl -lgslcblas -lcufft
+HPXCXXLIB    := #-lhealpix_cxx -lcfitsio
+CLFLD="../class"
+INCLUDE         += -I$(CLFLD)/include -I$(CLFLD)/external/HyRec2020 -I$(CLFLD)/external/RecfastCLASS -I$(CLFLD)/external/heating
+LIB             += -L$(CLFLD) -lclass 
 
-.DEFAULT_GOAL := gevolution
+# target and source
+EXEC         := gevolution
+SOURCE       := main.cu
+HEADERS      := $(wildcard *.hpp)
 
-CONFIG ?= config/local.mk
+# mandatory compiler settings (LATfield2)
+DLATFIELD2   := -DFFT3D -DHDF5
 
-include config/defaults.mk
--include $(CONFIG)
+# optional compiler settings (LATfield2)
+DLATFIELD2   += -DH5_HAVE_PARALLEL
+#DLATFIELD2   += -DEXTERNAL_IO # enables I/O server (use with care)
+DLATFIELD2   += -DSINGLE      # switches to single precision, use LIB -lfftw3f
 
-EXEC := gevolution
-SOURCE := main.cu
-HEADERS := $(wildcard *.hpp)
-BUILD_CONFIG_FILES := makefile config/defaults.mk $(wildcard $(CONFIG))
+# optional compiler settings (gevolution)
+DGEVOLUTION  := -DPHINONLINEAR
+DGEVOLUTION  += -DBENCHMARK
+# DGEVOLUTION  += -DEXACT_OUTPUT_REDSHIFTS
+#DGEVOLUTION  += -DVELOCITY      # enables velocity field utilities
+DGEVOLUTION  += -DCOLORTERMINAL
+#DGEVOLUTION  += -DCHECK_B
+DGEVOLUTION  += -DHAVE_CLASS    # requires LIB -lclass
+#DGEVOLUTION  += -DHAVE_HEALPIX  # requires LIB -lchealpix
+DGEVOLUTION  += -DGRADIENT_ORDER=1
+#DGEVOLUTION  += -DDEBUG_ALIGNMENT
+DGEVOLUTION  += -DTENSOR_EVOLUTION
 
-LATFIELD2_DEFINES := FFT3D HDF5
-GEVOLUTION_DEFINES := $(COMMON_DEFINES) $(EXTRA_DEFINES)
+# further compiler options
+OPT          := -O2 -std=c++17 -g -ccbin mpic++ -arch=sm_90 --extended-lambda -Xcompiler -fopenmp
 
-ifeq ($(PARALLEL_HDF5),1)
-LATFIELD2_DEFINES += H5_HAVE_PARALLEL
-HDF5_PKG := $(PARALLEL_HDF5_PKG)
-else
-HDF5_PKG := $(SERIAL_HDF5_PKG)
-endif
+$(EXEC): $(SOURCE) $(HEADERS) makefile
+	$(COMPILER) $< -o $@ $(OPT) $(DLATFIELD2) $(DGEVOLUTION) $(INCLUDE) $(LIB)
 
-ifeq ($(PRECISION),single)
-LATFIELD2_DEFINES += SINGLE
-FFTW_PKG := fftw3f
-FFTW_LIB := fftw3f
-else ifeq ($(PRECISION),double)
-FFTW_PKG := fftw3
-FFTW_LIB := fftw3
-else
-$(error PRECISION must be 'single' or 'double', got '$(PRECISION)')
-endif
+unit-tests: unit_tests.cu $(HEADERS) makefile
+	$(COMPILER) $< -o $@ $(OPT) $(DLATFIELD2) $(DGEVOLUTION) $(INCLUDE) $(LIB) -DGADGET_LENGTH_CONVERSION=1 -DGADGET_VELOCITY_CONVERSION=1
+	
+lccat: lccat.cpp
+	$(COMPILER) $< -o $@ $(OPT) $(DGEVOLUTION) $(INCLUDE)
+	
+lcmap: lcmap.cpp
+	$(COMPILER) $< -o $@ $(OPT) -fopenmp $(DGEVOLUTION) $(INCLUDE) $(LIB) $(HPXCXXLIB)
 
-ifeq ($(ENABLE_CLASS),1)
-GEVOLUTION_DEFINES += HAVE_CLASS
-FEATURE_LDLIBS += -lclass
-endif
+run-tests: unit-tests
+	rm -f test_output_*
+	srun -N 1 -n 4 -C gpu -A sm97 --time=5:00 --partition=debug ./unit-tests -n 2 -m 2 -Ngrid 128 -Npcl 2097152 -bench 8
 
-ifeq ($(ENABLE_HEALPIX),1)
-GEVOLUTION_DEFINES += HAVE_HEALPIX
-HEALPIX_PKG := chealpix
-ifeq ($(USE_PKG_CONFIG),0)
-FEATURE_LDLIBS += -lchealpix
-endif
-endif
+run: $(EXEC)
+	rsync -av ./$(EXEC) /capstor/scratch/cscs/adamek/testing/.
+	export OMP_NUM_THREADS=36
+	export OMP_PLACES=cores
+	srun -N 1 -n 8 --cpus-per-task=36 -C gpu -A sm97 --time=5:00 --partition=debug --hint=exclusive --cpu-bind=socket ./mps-wrapper.sh /capstor/scratch/cscs/adamek/testing/$(EXEC) -n 4 -m 2 -s /capstor/scratch/cscs/adamek/testing/settings.ini
 
-PKG_CONFIG_PACKAGES := $(HDF5_PKG) gsl $(FFTW_PKG) $(HEALPIX_PKG)
-ifeq ($(USE_PKG_CONFIG),1)
-PKG_CPPFLAGS := $(shell $(PKG_CONFIG) --cflags $(PKG_CONFIG_PACKAGES) 2>/dev/null)
-PKG_LDLIBS := $(shell $(PKG_CONFIG) --libs $(PKG_CONFIG_PACKAGES) 2>/dev/null)
-LCMAP_PKG_CPPFLAGS := $(shell $(PKG_CONFIG) --cflags chealpix healpix_cxx cfitsio gsl 2>/dev/null)
-LCMAP_PKG_LDLIBS := $(shell $(PKG_CONFIG) --libs chealpix healpix_cxx cfitsio gsl 2>/dev/null)
-else
-CORE_LDLIBS := -lhdf5 -lgsl -lgslcblas -lm -l$(FFTW_LIB)
-LCMAP_CORE_LDLIBS := -lhealpix_cxx -lchealpix -lcfitsio -lgsl -lgslcblas -lm
-endif
-
-DEFINE_FLAGS := $(addprefix -D,$(LATFIELD2_DEFINES) $(GEVOLUTION_DEFINES))
-BUILD_CPPFLAGS := -I. -I$(LATFIELD2_DIR) $(PKG_CPPFLAGS) $(CPPFLAGS) $(DEFINE_FLAGS)
-BUILD_NVCCFLAGS := -std=c++17 -arch=$(CUDA_ARCH) -ccbin $(MPICXX) --extended-lambda -Xcompiler -fopenmp $(NVCCFLAGS)
-BUILD_CXXFLAGS := -std=c++17 -fopenmp $(CXXFLAGS)
-BUILD_LDLIBS := $(PKG_LDLIBS) $(CORE_LDLIBS) $(FEATURE_LDLIBS) -lcufft $(LDLIBS)
-BUILD_UTILITY_CPPFLAGS := -I. $(PKG_CPPFLAGS) $(CPPFLAGS) $(addprefix -D,$(GEVOLUTION_DEFINES))
-BUILD_LCMAP_CPPFLAGS := $(BUILD_UTILITY_CPPFLAGS) $(LCMAP_PKG_CPPFLAGS) $(LCMAP_CPPFLAGS)
-BUILD_LCMAP_LDLIBS := $(LCMAP_PKG_LDLIBS) $(LCMAP_CORE_LDLIBS) $(LCMAP_LDLIBS)
-
-.PHONY: help print-config check-config parser-tests clean
-
-help:
-	@printf '%s\n' \
-	  'gevolution 2.0 build targets:' \
-	  '  gevolution      Build the GPU simulation executable (default)' \
-	  '  unit-tests      Build GPU unit tests' \
-	  '  parser-tests    Build and run parser tests; no CUDA configuration required' \
-	  '  lccat           Build the particle light-cone catalogue utility' \
-	  '  lcmap           Build the HEALPix/FITS map utility' \
-	  '  print-config    Show the resolved build configuration' \
-	  '  check-config    Validate configuration for GPU targets' \
-	  '  clean           Remove built executables' \
-	  '' \
-	  'Configuration examples:' \
-	  '  cp config/local.mk.example config/local.mk' \
-	  '  make print-config' \
-	  '  make CONFIG=config/alps.mk' \
-	  '  make CUDA_ARCH=sm_86 EXTRA_DEFINES="FIXED_ICS VELOCITY"'
-
-print-config:
-	@printf '%-22s %s\n' \
-	  'CONFIG' '$(CONFIG)' \
-	  'NVCC' '$(NVCC)' \
-	  'CXX' '$(CXX)' \
-	  'MPICXX' '$(MPICXX)' \
-	  'CUDA_ARCH' '$(CUDA_ARCH)' \
-	  'LATFIELD2_DIR' '$(LATFIELD2_DIR)' \
-	  'PRECISION' '$(PRECISION)' \
-	  'PARALLEL_HDF5' '$(PARALLEL_HDF5)' \
-	  'ENABLE_CLASS' '$(ENABLE_CLASS)' \
-	  'ENABLE_HEALPIX' '$(ENABLE_HEALPIX)' \
-	  'USE_PKG_CONFIG' '$(USE_PKG_CONFIG)' \
-	  'PKG_CONFIG_PACKAGES' '$(PKG_CONFIG_PACKAGES)' \
-	  'DEFINES' '$(LATFIELD2_DEFINES) $(GEVOLUTION_DEFINES)' \
-	  'CPPFLAGS' '$(BUILD_CPPFLAGS)' \
-	  'NVCCFLAGS' '$(BUILD_NVCCFLAGS)' \
-	  'LDFLAGS' '$(LDFLAGS)' \
-	  'LDLIBS' '$(BUILD_LDLIBS)'
-
-check-config:
-	@test -n "$(strip $(CUDA_ARCH))" || { \
-	  echo "error: CUDA_ARCH is required for GPU targets."; \
-	  echo "Set it in config/local.mk, select a profile, or run make CUDA_ARCH=sm_XX."; \
-	  exit 2; \
-	}
-	@test -f "$(LATFIELD2_DIR)/LATfield2.hpp" || { \
-	  echo "error: LATfield2.hpp not found under LATFIELD2_DIR=$(LATFIELD2_DIR)"; \
-	  exit 2; \
-	}
-ifeq ($(USE_PKG_CONFIG),1)
-	@$(PKG_CONFIG) --exists $(PKG_CONFIG_PACKAGES) || { \
-	  echo "error: pkg-config could not resolve: $(PKG_CONFIG_PACKAGES)"; \
-	  exit 2; \
-	}
-endif
-
-$(EXEC): $(SOURCE) $(HEADERS) $(BUILD_CONFIG_FILES) | check-config
-	$(NVCC) $(BUILD_CPPFLAGS) $(BUILD_NVCCFLAGS) $< -o $@ $(LDFLAGS) $(BUILD_LDLIBS)
-
-unit-tests: unit_tests.cu $(HEADERS) $(BUILD_CONFIG_FILES) | check-config
-	$(NVCC) $(BUILD_CPPFLAGS) $(BUILD_NVCCFLAGS) $< -o $@ $(LDFLAGS) $(BUILD_LDLIBS) -DGADGET_LENGTH_CONVERSION=1 -DGADGET_VELOCITY_CONVERSION=1
-
-parser-tests: tests/parser_tests.cpp parser.hpp metadata.hpp
-	$(CXX) -std=c++17 -Wall -Wextra -pedantic $< -o /tmp/gevolution-parser-tests
-	/tmp/gevolution-parser-tests
-
-lccat: lccat.cpp metadata.hpp parser.hpp $(BUILD_CONFIG_FILES)
-	$(CXX) $(BUILD_UTILITY_CPPFLAGS) $(BUILD_CXXFLAGS) $< -o $@ $(LDFLAGS)
-
-lcmap: lcmap.cpp metadata.hpp parser.hpp background.hpp $(BUILD_CONFIG_FILES)
-	@if [ "$(USE_PKG_CONFIG)" = "1" ]; then \
-	  $(PKG_CONFIG) --exists chealpix healpix_cxx cfitsio gsl || { \
-	    echo "error: pkg-config could not resolve lcmap dependencies: chealpix healpix_cxx cfitsio gsl"; \
-	    exit 2; \
-	  }; \
-	fi
-	$(CXX) $(BUILD_LCMAP_CPPFLAGS) $(BUILD_CXXFLAGS) $< -o $@ $(LDFLAGS) $(BUILD_LCMAP_LDLIBS)
+profile: $(EXEC)
+	rsync -av ./$(EXEC) /capstor/scratch/cscs/adamek/testing/.
+	export LD_LIBRARY_PATH=$$LD_LIBRARY_PATH:/users/adamek/local_arm/lib
+	export OMP_NUM_THREADS=36
+	export OMP_PLACES=cores
+	srun -N 2 -n 16 --cpus-per-task=36 -C gpu -A sm97 --time=12:00 --partition=debug --hint=exclusive --cpu-bind=socket ./mps-wrapper.sh ./nsys_wrapper.sh /capstor/scratch/cscs/adamek/testing/$(EXEC) -n 4 -m 4 -s /capstor/scratch/cscs/adamek/testing/benchmark.ini
 
 clean:
-	-rm -f $(EXEC) unit-tests lccat lcmap
+	-rm -f $(EXEC) lccat lcmap unit-tests
 
-ifeq ($(ENABLE_ALPS_TARGETS),1)
-include make/alps-targets.mk
-endif

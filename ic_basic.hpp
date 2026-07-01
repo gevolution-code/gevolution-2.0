@@ -1752,7 +1752,7 @@ double applyMomentumDistribution(Particles<part_simple,part_simple_info,part_sim
 				dT += (1. - d[0]) * (1. - d[1]) * d[2] * (*delta)(x+2);
 				dT += d[0] * (1. - d[1]) * d[2] * (*delta)(x+0+2);
 				dT += (1. - d[0]) * d[1] * d[2] * (*delta)(x+1+2);
-				dT += d[0] * d[1] * d[2] * (*delta)(x+2);
+				dT += d[0] * d[1] * d[2] * (*delta)(x+0+1+2);
 					
 				q *= T_m * (1. + dT);
 			}
@@ -1762,13 +1762,137 @@ double applyMomentumDistribution(Particles<part_simple,part_simple_info,part_sim
 			(*it).vel[0] += cos(r2) * sqrt(1 - r1*r1) * q;
 			(*it).vel[1] += sin(r2) * sqrt(1 - r1*r1) * q;
 			(*it).vel[2] += r1 * q;
-			
+
 			sum_q += q;
 		}
-		
+
 		if (delta != NULL) x.next();
 	}
-	
+
+	return sum_q;
+}
+
+__host__ __device__ Real applyMomentumDistribution_perf_update(double dtau, double lat_resolution, part_simple * part, double * ref_dist, part_simple_info partInfo, Field<Real> ** fields, Site * sites, int nfield, double * params, double * outputs, int noutputs)
+{
+	sitmo::prng_engine prng;
+	float r1, r2, q, dT;
+	uint32_t i, r;
+
+	const float ql[] = {0.0f,       0.0453329523f, 0.0851601009f, 0.115766097f,
+	                    0.142169202f, 0.166069623f, 0.188283033f, 0.209275639f,
+	                    0.229344099f, 0.248691555f, 0.267464827f, 0.285774552f,
+	                    0.303706948f, 0.321331123f, 0.338703809f, 0.355872580f,
+	                    0.372878086f, 0.389755674f, 0.406536572f, 0.423248791f,
+	                    0.439917819f, 0.456567164f, 0.473218795f, 0.489893502f,
+	                    0.506611198f, 0.523391180f, 0.540252353f, 0.557213439f,
+	                    0.574293166f, 0.591510448f, 0.608884565f, 0.626435339f,
+	                    0.644183319f, 0.662149971f, 0.680357893f, 0.698831041f,
+	                    0.717594982f, 0.736677192f, 0.756107381f, 0.775917886f,
+	                    0.796144127f, 0.816825143f, 0.838004248f, 0.859729814f,
+	                    0.882056241f, 0.905045149f, 0.928766878f, 0.953302387f,
+	                    0.978745698f, 1.00520708f,  1.03281729f,  1.06173322f,
+	                    1.09214584f,  1.12429121f,  1.15846661f,  1.19505456f,
+	                    1.23456031f,  1.27767280f,  1.32536981f,  1.37911302f,
+	                    1.44124650f,  1.51592808f,  1.61180199f,  1.75307820f, 29.0f};
+
+	const float qr[] = {29.0f,       11.8477879f, 10.3339062f, 9.58550750f,
+	                    9.08034038f, 8.69584518f, 8.38367575f, 8.11975908f,
+	                    7.89035001f, 7.68685171f, 7.50352431f, 7.33634187f,
+	                    7.18236952f, 7.03940031f, 6.90573157f, 6.78002122f,
+	                    6.66119176f, 6.54836430f, 6.44081188f, 6.33792577f,
+	                    6.23919052f, 6.14416529f, 6.05246957f, 5.96377208f,
+	                    5.87778212f, 5.79424263f, 5.71292467f, 5.63362289f,
+	                    5.55615183f, 5.48034280f, 5.40604138f, 5.33310512f,
+	                    5.26140176f, 5.19080749f, 5.12120558f, 5.05248501f,
+	                    4.98453932f, 4.91726547f, 4.85056276f, 4.78433177f,
+	                    4.71847331f, 4.65288728f, 4.58747144f, 4.52212011f,
+	                    4.45672261f, 4.39116154f, 4.32531058f, 4.25903193f,
+	                    4.19217309f, 4.12456265f, 4.05600493f, 3.98627278f,
+	                    3.91509779f, 3.84215661f, 3.76705129f, 3.68928014f,
+	                    3.60819270f, 3.52291720f, 3.43223655f, 3.33436084f,
+	                    3.22646839f, 3.10364876f, 2.95592669f, 2.75624893f, 0.0f};
+
+	const float f[] = {0.0f,          0.0010042516f, 0.0034718142f, 0.00631345904f,
+	                  0.00938886471f, 0.0126471707f, 0.0160614805f, 0.0196150986f,
+	                   0.0232967063f, 0.0270982040f, 0.0310135938f, 0.0350383391f,
+	                   0.0391689707f, 0.0434028310f, 0.0477379005f, 0.0521726764f,
+	                   0.0567060859f, 0.0613374223f, 0.0660662983f, 0.0708926105f,
+	                   0.0758165136f, 0.0808384013f, 0.0859588926f, 0.0911788222f,
+	                   0.0964992355f, 0.101921386f,  0.107446735f,  0.113076958f,
+	                   0.118813945f,  0.124659815f,  0.130616922f,  0.136687871f,
+	                   0.142875536f,  0.149183078f,  0.155613967f,  0.162172016f,
+	                   0.168861408f,  0.175686736f,  0.182653051f,  0.189765914f,
+	                   0.197031455f,  0.204456455f,  0.212048433f,  0.219815749f,
+	                   0.227767740f,  0.235914877f,  0.244268957f,  0.252843349f,
+	                   0.261653294f,  0.270716296f,  0.280052614f,  0.289685921f,
+	                   0.299644172f,  0.309960782f,  0.320676286f,  0.331840691f,
+	                   0.343516979f,  0.355786485f,  0.368757588f,  0.382580625f,
+	                   0.397475563f,  0.413789108f,  0.432131941f,  0.453799050f, 0.482830296f};
+
+	const uint32_t seed = static_cast<uint32_t>(params[0]);
+	const float T_m = static_cast<float>(params[1]);
+
+	prng.seed(seed);
+	prng.discard((uint64_t) (7l * (*part).ID));
+
+	while (true)
+	{
+		r = prng();
+		i = r % 64;
+		r /= 64;
+
+		q = ql[i] + 64.0f * (qr[i]-ql[i]) * ((float) r / (float) sitmo::prng_engine::max());
+
+		if (q > ql[i+1] && q < qr[i+1]) break;
+
+		if (f[i] + (f[i+1]-f[i]) * ((float) prng() / (float) sitmo::prng_engine::max()) < q * q / (exp(q) + 1.0f)) break;
+	}
+
+	r1 = 2.0f * ((float) prng() / (float) sitmo::prng_engine::max()) - 1.0f;
+	r2 = 2.0f * (float) M_PI * ((float) prng() / (float) sitmo::prng_engine::max());
+
+	if (nfield > 0)
+	{
+		dT = (1. - ref_dist[0]) * (1. - ref_dist[1]) * (1. - ref_dist[2]) * (*fields[0])(sites[0]);
+		dT += ref_dist[0] * (1. - ref_dist[1]) * (1. - ref_dist[2]) * (*fields[0])(sites[0]+0);
+		dT += (1. - ref_dist[0]) * ref_dist[1] * (1. - ref_dist[2]) * (*fields[0])(sites[0]+1);
+		dT += ref_dist[0] * ref_dist[1] * (1. - ref_dist[2]) * (*fields[0])(sites[0]+0+1);
+		dT += (1. - ref_dist[0]) * (1. - ref_dist[1]) * ref_dist[2] * (*fields[0])(sites[0]+2);
+		dT += ref_dist[0] * (1. - ref_dist[1]) * ref_dist[2] * (*fields[0])(sites[0]+0+2);
+		dT += (1. - ref_dist[0]) * ref_dist[1] * ref_dist[2] * (*fields[0])(sites[0]+1+2);
+		dT += ref_dist[0] * ref_dist[1] * ref_dist[2] * (*fields[0])(sites[0]+0+1+2);
+		q *= T_m * (1. + dT);
+	}
+	else
+	{
+		q *= T_m;
+	}
+
+	(*part).vel[0] += cos(r2) * sqrt(1.0f - r1*r1) * q;
+	(*part).vel[1] += sin(r2) * sqrt(1.0f - r1*r1) * q;
+	(*part).vel[2] += r1 * q;
+
+	if (noutputs > 0)
+		outputs[0] = q;
+
+	return (*part).vel[0] * (*part).vel[0] + (*part).vel[1] * (*part).vel[1] + (*part).vel[2] * (*part).vel[2];
+}
+
+struct applyMomentumDistribution_perf_update_functor
+{
+	__host__ __device__ Real operator()(double dtau, double dx, part_simple * part, double * ref_dist, part_simple_info partInfo, Field<Real> * fields[], Site * sites, int nfield, double * params, double * outputs, int noutputs)
+	{
+		return applyMomentumDistribution_perf_update(dtau, dx, part, ref_dist, partInfo, fields, sites, nfield, params, outputs, noutputs);
+	}
+};
+
+__host__ double applyMomentumDistribution(perfParticles<part_simple,part_simple_info> * pcls, unsigned int seed, float T_m = 0., Field<Real> * delta = NULL)
+{
+	double params[2] = {(double) seed, (double) T_m};
+	double sum_q = 0.0;
+	int reduce_type = SUM_LOCAL;
+	DeviceStagingBuffer<double> d_params(params, 2);
+	sum_q = pcls->updateVel(applyMomentumDistribution_perf_update_functor(), 0., (delta != NULL) ? &delta : NULL, (delta != NULL) ? 1 : 0, d_params.data(), &sum_q, &reduce_type, 1);
 	return sum_q;
 }
 
@@ -1813,7 +1937,7 @@ double applyMomentumDistribution(Particles<part_simple,part_simple_info,part_sim
 // 
 //////////////////////////
 
-void generateIC_basic(metadata & sim, icsettings & ic, cosmology & cosmo, const double fourpiG, perfParticles<part_simple,part_simple_info> * pcls_cdm, perfParticles<part_simple,part_simple_info> * pcls_b, Particles<part_simple,part_simple_info,part_simple_dataType> * pcls_ncdm, double * maxvel, Field<Real> * phi, Field<Real> * chi, Field<Real> * Bi, Field<Real> * source, Field<Real> * Sij, Field<Cplx> * scalarFT, Field<Cplx> * BiFT, Field<Cplx> * SijFT, PlanFFT<Cplx> * plan_phi, PlanFFT<Cplx> * plan_chi, PlanFFT<Cplx> * plan_Bi, PlanFFT<Cplx> * plan_source, PlanFFT<Cplx> * plan_Sij,
+void generateIC_basic(metadata & sim, icsettings & ic, cosmology & cosmo, const double fourpiG, perfParticles<part_simple,part_simple_info> * pcls_cdm, perfParticles<part_simple,part_simple_info> * pcls_b, perfParticles<part_simple,part_simple_info> * pcls_ncdm, double * maxvel, Field<Real> * phi, Field<Real> * chi, Field<Real> * Bi, Field<Real> * source, Field<Real> * Sij, Field<Cplx> * scalarFT, Field<Cplx> * BiFT, Field<Cplx> * SijFT, PlanFFT<Cplx> * plan_phi, PlanFFT<Cplx> * plan_chi, PlanFFT<Cplx> * plan_Bi, PlanFFT<Cplx> * plan_source, PlanFFT<Cplx> * plan_Sij,
 #ifdef HAVE_CLASS
 background & class_background, perturbs & class_perturbs,
 #endif
@@ -2358,20 +2482,22 @@ parameter * params, int & numparam)
 		pcls_ncdm_info[p].mass = cosmo.Omega_ncdm[p] / (Real) (sim.numpcl[1+sim.baryon_flag+p]*(long)ic.numtile[1+sim.baryon_flag+p]*(long)ic.numtile[1+sim.baryon_flag+p]*(long)ic.numtile[1+sim.baryon_flag+p]);
 		pcls_ncdm_info[p].relativistic = true;
 		
-		pcls_ncdm[p].initialize(pcls_ncdm_info[p], pcls_ncdm_dataType, &(phi->lattice()), boxSize);
-		
+		capacity = (16L * sim.numpcl[1+sim.baryon_flag+p] * (long) ic.numtile[1+sim.baryon_flag+p] * (long) ic.numtile[1+sim.baryon_flag+p] * (long) ic.numtile[1+sim.baryon_flag+p]) / (parallel.size() * 15L);
+		pcls_ncdm[p].initialize(pcls_ncdm_info[p], &(phi->lattice()), boxSize, capacity+PCL_EXTRA_CAPACITY, PCL_EXTRA_CAPACITY);
+
 		initializeParticlePositions(sim.numpcl[1+sim.baryon_flag+p], pcldata, ic.numtile[1+sim.baryon_flag+p], pcls_ncdm[p]);
-		
-		pcls_ncdm[p].moveParticles(displace_pcls_ic_basic, 1., &chi, 1, NULL, &max_displacement, &op, 1);	// displace non-CDM particles
-		
+		pcls_ncdm[p].updateRowBuffers();
+
+		pcls_ncdm[p].moveParticles(displace_pcls_ic_basic_functor(), 1., &chi, 1, NULL, &max_displacement, &op, 1);	// displace non-CDM particles
+
 		sim.numpcl[1+sim.baryon_flag+p] *= (long) ic.numtile[1+sim.baryon_flag+p] * (long) ic.numtile[1+sim.baryon_flag+p] * (long) ic.numtile[1+sim.baryon_flag+p];
-	
+
 		COUT << " " << sim.numpcl[1+sim.baryon_flag+p] << " ncdm particles initialized for species " << p+1 << ": maximum displacement = " << max_displacement * sim.numpts << " lattice units." << endl;
-		
+
 		free(pcldata);
-		
+
 		if (ic.pkfile[0] == '\0')	// set non-CDM velocities using transfer functions
-			pcls_ncdm[p].updateVel(initialize_q_ic_basic, 1., &phi, 1);
+			pcls_ncdm[p].updateVel(initialize_q_ic_basic_functor(), 1., &phi, 1);
 	}
 
 	free(temp1);
@@ -2429,7 +2555,7 @@ parameter * params, int & numparam)
 		if (ic.pkfile[0] != '\0') // if power spectrum is used instead of transfer functions, set bulk velocities using linear approximation
 		{		
 			rescale = a / Hconf(a, fourpiG, cosmo) / (1.5 * Omega_m(a, cosmo) + Omega_rad(a, cosmo));
-			pcls_ncdm[p].updateVel(initialize_q_ic_basic, rescale, &phi, 1);
+			pcls_ncdm[p].updateVel(initialize_q_ic_basic_functor(), rescale, &phi, 1);
 		}
 		
 		if (cosmo.m_ncdm[p] > 0.) // add velocity dispersion for non-CDM species
@@ -2441,10 +2567,11 @@ parameter * params, int & numparam)
 		}
 #ifdef ANISOTROPIC_EXPANSION
 		double f_params[7] = {a, 0., 0., 0., 0., 0., 0.};
-		maxvel[1+sim.baryon_flag+p] = pcls_ncdm[p].updateVel(update_q, 0., &phi, 1, f_params);
+		DeviceStagingBuffer<double> d_f_params(f_params, 7);
 #else
-		maxvel[1+sim.baryon_flag+p] = pcls_ncdm[p].updateVel(update_q, 0., &phi, 1, &a);
+		DeviceStagingBuffer<double> d_f_params(&a, 1);
 #endif
+		maxvel[1+sim.baryon_flag+p] = pcls_ncdm[p].updateVel(update_q_functor(), 0., &phi, 1, d_f_params.data());
 	}
 	
 	nvtxRangePushA("initialize B");
