@@ -86,7 +86,7 @@ struct makehijprimenormfunctor
 //
 //////////////////////////
 
-void writeSnapshots(metadata & sim, cosmology & cosmo, const double fourpiG, const double a, const double dtau_old, const int done_hij, const int snapcount, string h5filename, perfParticles_gevolution<part_simple,part_simple_info> * pcls_cdm, perfParticles_gevolution<part_simple,part_simple_info> * pcls_b, perfParticles_gevolution<part_simple,part_simple_info> * pcls_ncdm, Field<Real> * phi, Field<Real> * chi, Field<Real> * Bi, Field<Real> * source, Field<Real> * Sij, Field<Cplx> * scalarFT, Field<Cplx> * BiFT, Field<Cplx> * SijFT, PlanFFT<Cplx> * plan_phi, PlanFFT<Cplx> * plan_chi, PlanFFT<Cplx> * plan_Bi, PlanFFT<Cplx> * plan_source, PlanFFT<Cplx> * plan_Sij
+void writeSnapshots(metadata & sim, cosmology & cosmo, const double fourpiG, const double a, const double dtau_old, int done_hij, const int snapcount, string h5filename, perfParticles_gevolution<part_simple,part_simple_info> * pcls_cdm, perfParticles_gevolution<part_simple,part_simple_info> * pcls_b, perfParticles_gevolution<part_simple,part_simple_info> * pcls_ncdm, Field<Real> * phi, Field<Real> * chi, Field<Real> * Bi, Field<Real> * source, Field<Real> * Sij, Field<Cplx> * scalarFT, Field<Cplx> * BiFT, Field<Cplx> * SijFT, PlanFFT<Cplx> * plan_phi, PlanFFT<Cplx> * plan_chi, PlanFFT<Cplx> * plan_Bi, PlanFFT<Cplx> * plan_source, PlanFFT<Cplx> * plan_Sij
 #ifdef TENSOR_EVOLUTION
 , Field<Cplx> * hijFT, Field<Cplx> * hijprimeFT, PlanFFT<Cplx> * plan_hij, PlanFFT<Cplx> * plan_hijprime
 #endif
@@ -333,11 +333,13 @@ void writeSnapshots(metadata & sim, cosmology & cosmo, const double fourpiG, con
 #endif
 #ifdef TENSOR_EVOLUTION
 		plan_hij->execute(FFT_BACKWARD);
+		done_hij = 0;
 		if (sim.downgrade_factor > 1)
 			Sij->saveHDF5_coarseGrain3D(h5filename + filename + "_hij_dyn.h5", sim.downgrade_factor);
 		else
 			Sij->saveHDF5(h5filename + filename + "_hij_dyn.h5");
 		plan_hijprime->execute(FFT_BACKWARD);
+		done_hij = 0;
 		if (sim.downgrade_factor > 1)
 			Sij->saveHDF5_coarseGrain3D(h5filename + filename + "_hij_prime.h5", sim.downgrade_factor);
 		else
@@ -354,6 +356,7 @@ void writeSnapshots(metadata & sim, cosmology & cosmo, const double fourpiG, con
 		Field<Real> * hijprimenorm_fields[2] = {source, Sij};
 		DeviceStagingBuffer<Field<Real> *> d_hijprimenorm_fields(hijprimenorm_fields, 2);
 		lattice_for_each<<<dim3(source->lattice().sizeLocal(1), source->lattice().sizeLocal(2)), 128>>>(makehijprimenormfunctor(), source->lattice().sizeLocal(0), d_hijprimenorm_fields.data(), 2, nullptr, nullptr, nullptr);
+		done_hij = 0;
 		cudaDeviceSynchronize();
 		if (sim.downgrade_factor > 1)
 			source->saveHDF5_coarseGrain3D(h5filename + filename + "_hij_prime_norm.h5", sim.downgrade_factor);

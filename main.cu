@@ -311,6 +311,7 @@ int main(int argc, char **argv)
 	Sij.initialize(lat,3,3,symmetric);
 	Field<Cplx> SijFT;
 	SijFT.initialize(latFT,3,3,symmetric);
+	PlanFFT<Cplx> plan_Sij(&Sij, &SijFT);
 #ifdef TENSOR_EVOLUTION
 	Field<Cplx> hijFT;
 	Field<Cplx> hijprimeFT;
@@ -322,7 +323,7 @@ int main(int argc, char **argv)
 	plan_hij.setExecutionMode(FFT_EXECUTION_CUDA_AWARE_MPI);
 	plan_hijprime.setExecutionMode(FFT_EXECUTION_CUDA_AWARE_MPI);
 #endif
-	PlanFFT<Cplx> plan_Sij(&Sij, &SijFT);
+	
 	
 	ManagedCudaObject<Field<Real>> phi_storage;
 	ManagedCudaObject<Field<Real>> source_storage;
