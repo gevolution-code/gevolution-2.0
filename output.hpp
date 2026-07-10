@@ -115,12 +115,12 @@ void writeSnapshots(metadata & sim, cosmology & cosmo, const double fourpiG, con
 		/*pcls_cdm->saveHDF5_server_open(h5filename + filename + "_cdm");
 		if (sim.baryon_flag)
 			pcls_b->saveHDF5_server_open(h5filename + filename + "_b");*/
-		for (int i = 0; i < cosmo.num_ncdm; i++)
-		{
-			if (sim.numpcl[1+sim.baryon_flag+i] == 0) continue;
-			sprintf(buffer, "_ncdm%d", i);
-			pcls_ncdm[i].saveHDF5_server_open(h5filename + filename + buffer);
-		}
+		// for (int i = 0; i < cosmo.num_ncdm; i++)
+		// {
+		// 	if (sim.numpcl[1+sim.baryon_flag+i] == 0) continue;
+		// 	sprintf(buffer, "_ncdm%d", i);
+		// 	pcls_ncdm[i].saveHDF5_server_open(h5filename + filename + buffer);
+		// }
 	}
 
 	if (sim.out_snapshot & MASK_T00)
