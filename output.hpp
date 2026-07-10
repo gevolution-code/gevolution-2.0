@@ -68,6 +68,9 @@ using namespace std;
 //////////////////////////
 
 void writeSnapshots(metadata & sim, cosmology & cosmo, const double fourpiG, const double a, const double dtau_old, const int done_hij, const int snapcount, string h5filename, perfParticles_gevolution<part_simple,part_simple_info> * pcls_cdm, perfParticles_gevolution<part_simple,part_simple_info> * pcls_b, Particles_gevolution<part_simple,part_simple_info,part_simple_dataType> * pcls_ncdm, Field<Real> * phi, Field<Real> * chi, Field<Real> * Bi, Field<Real> * source, Field<Real> * Sij, Field<Cplx> * scalarFT, Field<Cplx> * BiFT, Field<Cplx> * SijFT, PlanFFT<Cplx> * plan_phi, PlanFFT<Cplx> * plan_chi, PlanFFT<Cplx> * plan_Bi, PlanFFT<Cplx> * plan_source, PlanFFT<Cplx> * plan_Sij
+#ifdef TENSOR_EVOLUTION
+, PlanFFT<Cplx> * plan_hij
+#endif
 #ifdef CHECK_B
 , Field<Real> * Bi_check, Field<Cplx> * BiFT_check, PlanFFT<Cplx> * plan_Bi_check
 #endif
@@ -293,8 +296,12 @@ void writeSnapshots(metadata & sim, cosmology & cosmo, const double fourpiG, con
 		nvtxRangePushA("hij output");
 		if (done_hij == 0)
 		{
+#ifdef TENSOR_EVOLUTION
+			plan_hij->execute(FFT_BACKWARD);
+#else
 			projectFTtensor(*SijFT, *SijFT);
 			plan_Sij->execute(FFT_BACKWARD);
+#endif
 			Sij->updateHalo();
 		}
 
@@ -991,7 +998,11 @@ inline int64_t healpix_find_pixbatch_offset(const HealpixShellDesc & desc, int b
 //
 //////////////////////////
 
-void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, const double a, const double tau, const double dtau, const double dtau_old, const double maxvel, const int cycle, string h5filename, perfParticles_gevolution<part_simple,part_simple_info> * pcls_cdm, perfParticles_gevolution<part_simple,part_simple_info> * pcls_b, Particles_gevolution<part_simple,part_simple_info,part_simple_dataType> * pcls_ncdm, Field<Real> * phi, Field<Real> * chi, Field<Real> * Bi, Field<Real> * Sij, Field<Cplx> * BiFT, Field<Cplx> * SijFT, PlanFFT<Cplx> * plan_Bi, PlanFFT<Cplx> * plan_Sij, int & done_hij, LightconeIDBacklog ** IDbacklog)
+void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, const double a, const double tau, const double dtau, const double dtau_old, const double maxvel, const int cycle, string h5filename, perfParticles_gevolution<part_simple,part_simple_info> * pcls_cdm, perfParticles_gevolution<part_simple,part_simple_info> * pcls_b, Particles_gevolution<part_simple,part_simple_info,part_simple_dataType> * pcls_ncdm, Field<Real> * phi, Field<Real> * chi, Field<Real> * Bi, Field<Real> * Sij, Field<Cplx> * BiFT, Field<Cplx> * SijFT, PlanFFT<Cplx> * plan_Bi, PlanFFT<Cplx> * plan_Sij
+#ifdef TENSOR_EVOLUTION
+, PlanFFT<Cplx> * plan_hij
+#endif
+, int & done_hij, LightconeIDBacklog ** IDbacklog)
 {
 	int i, j, n, p;
 	double d;
@@ -1327,8 +1338,12 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 
 			if (sim.out_lightcone[i] & MASK_HIJ && done_hij == 0)
 			{
+#ifdef TENSOR_EVOLUTION
+				plan_hij->execute(FFT_BACKWARD);
+#else
 				projectFTtensor(*SijFT, *SijFT);
 				plan_Sij->execute(FFT_BACKWARD);
+#endif
 				Sij->updateHalo();
 				done_hij = 1;
 			}
