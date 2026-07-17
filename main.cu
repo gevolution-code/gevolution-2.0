@@ -201,6 +201,27 @@ int main(int argc, char **argv)
 		parallel.abortForce();
 	}
 
+	if (deviceCount > 1)
+	{
+		MPI_Comm node_comm;
+		int local_rank;
+		MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &node_comm);
+		MPI_Comm_rank(node_comm, &local_rank);
+		MPI_Comm_free(&node_comm);
+
+		const int selected_device = local_rank % deviceCount;
+		const cudaError_t set_device_status = cudaSetDevice(selected_device);
+		if (set_device_status != cudaSuccess)
+		{
+			std::cerr << "proc#" << parallel.rank() << ": failed to select CUDA device " << selected_device
+				<< " for local MPI rank " << local_rank << ": " << cudaGetErrorString(set_device_status) << std::endl;
+			parallel.abortForce();
+		}
+
+		std::cerr << "proc#" << parallel.rank() << ": automatically selected CUDA device " << selected_device
+			<< " for local MPI rank " << local_rank << " from " << deviceCount << " visible devices" << std::endl;
+	}
+
 	for (int device = 0; device < deviceCount; ++device)
 	{
 		cudaDeviceProp deviceProp;

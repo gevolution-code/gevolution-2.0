@@ -47,7 +47,7 @@ ifeq ($(ENABLE_HEALPIX),1)
 GEVOLUTION_DEFINES += HAVE_HEALPIX
 HEALPIX_PKG := chealpix
 ifeq ($(USE_PKG_CONFIG),0)
-FEATURE_LDLIBS += -lchealpix
+FEATURE_LDLIBS += -lchealpix -lcfitsio
 endif
 endif
 
