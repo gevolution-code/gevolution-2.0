@@ -1317,6 +1317,22 @@ void generateDisplacementField(Field<Cplx> & potFT, const Real coeff, const gsl_
 						while (r1 == 0);
 						r2 = (float) prng() / (float) sitmo::prng_engine::max();
 						r1 = boxMullerRadialAmplitude(r1);
+						if (kx == 0 && kz == 0)
+						{
+							// Conjugate (0, -ky, 0), retaining the original stream
+							// advancement above so kx > 0 modes remain unchanged.
+							sitmo::prng_engine conjugate_prng;
+							conjugate_prng.seed(seed);
+							conjugate_prng.discard((uint64_t) (linesize - ky) * huge_skip);
+							do
+							{
+								r1 = (float) conjugate_prng() / (float) sitmo::prng_engine::max();
+							}
+							while (r1 == 0);
+							r2 = -(float) conjugate_prng() / (float) sitmo::prng_engine::max();
+							r1 = boxMullerRadialAmplitude(r1);
+						}
+
 						//i++;
 						
 						if constexpr (ignorekernel == 0)
@@ -1409,7 +1425,8 @@ void generateDisplacementField(Field<Cplx> & potFT, const Real coeff, const gsl_
 			for (int ky = kymin; ky <= kyend; ky++)
 			{
 				prng.seed(seed);
-				prng.discard((((uint64_t) (linesize - kz)) * huge_skip + (uint64_t) ky) * huge_skip);
+				// Match (0, -ky, -kz); ky == 0 belongs to the first quadrant stream.
+				prng.discard((((ky == 0 ? 0ULL : huge_skip) + (uint64_t) (linesize - kz)) * huge_skip + (uint64_t) ky) * huge_skip);
 
 				k.setCoord(kx, ky, kz);
 					
@@ -1522,7 +1539,8 @@ void generateDisplacementField(Field<Cplx> & potFT, const Real coeff, const gsl_
 			for (int ky = kymax; ky >= kyend; ky--)
 			{
 				prng.seed(seed);
-				prng.discard(((huge_skip + huge_skip + (uint64_t) (linesize - kz)) * huge_skip + (uint64_t) (linesize - ky)) * huge_skip);
+				// Match the first quadrant mode (0, -ky, -kz).
+				prng.discard(((uint64_t) (linesize - kz) * huge_skip + (uint64_t) (linesize - ky)) * huge_skip);
 
 				k.setCoord(kx, ky, kz);
 					
