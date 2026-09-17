@@ -564,6 +564,12 @@ int main(int argc, char **argv)
 			
 			gsl_spline_free(tk1);
 			gsl_spline_free(tk2);
+			COUT << COLORTEXT_GREEN << " CLASS linear perturbations are using the snapshot-derived zetaFT realization." << COLORTEXT_RESET << endl;
+		}
+		else if (ic.generator == ICGEN_READ_FROM_DISK)
+		{
+			COUT << COLORTEXT_RED << " error" << COLORTEXT_RESET << ": snapshot-derived zetaFT was not initialized for CLASS linear perturbations!" << endl;
+			parallel.abortForce();
 		}
 		if (sim.gr_flag > 0 && a < 1. / (sim.z_switch_linearchi + 1.) && (ic.generator == ICGEN_BASIC || (ic.generator == ICGEN_READ_FROM_DISK && cycle == 0)))
 		{
@@ -1317,7 +1323,7 @@ int main(int argc, char **argv)
 #endif
 
 if (zetaFT != NULL)
-	delete[] zetaFT;
+	delete zetaFT;
 
 for (int i = 0; i < sim.num_IDlogs; i++)
 {

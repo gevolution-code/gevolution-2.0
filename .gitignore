@@ -1,2 +1,4 @@
 config/local.mk
 manual.pdf
+/validation/
+/gevolution-class-validation
