@@ -1079,6 +1079,9 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 	Site xsim;
 #ifdef HAVE_HEALPIX
 	int done_B = 0;
+	const bool healpix_cuda_aware_mpi_active = cuda_aware_mpi_active &&
+		!gevolution_env_var_enabled("GEVOLUTION_HEALPIX_DISABLE_CUDA_AWARE_MPI");
+	static bool healpix_staging_override_reported = false;
 	int64_t pix, q;
 	int pixbatch_type;
 	int commdir[2];
@@ -1102,7 +1105,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 	int io_group_size;
 	auto send_pixel_dim0 = [&](Real * device_buffer, int count, int destination)
 	{
-		if (cuda_aware_mpi_active)
+		if (healpix_cuda_aware_mpi_active)
 		{
 			parallel.send_dim0<Real>(device_buffer, count, destination);
 			return;
@@ -1114,7 +1117,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 	};
 	auto send_pixel_dim1 = [&](Real * device_buffer, int count, int destination)
 	{
-		if (cuda_aware_mpi_active)
+		if (healpix_cuda_aware_mpi_active)
 		{
 			parallel.send_dim1<Real>(device_buffer, count, destination);
 			return;
@@ -1126,7 +1129,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 	};
 	auto receive_pixel_dim0 = [&](Real * device_buffer, int count, int source)
 	{
-		if (cuda_aware_mpi_active)
+		if (healpix_cuda_aware_mpi_active)
 		{
 			parallel.receive_dim0<Real>(device_buffer, count, source);
 			return;
@@ -1138,7 +1141,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 	};
 	auto receive_pixel_dim1 = [&](Real * device_buffer, int count, int source)
 	{
-		if (cuda_aware_mpi_active)
+		if (healpix_cuda_aware_mpi_active)
 		{
 			parallel.receive_dim1<Real>(device_buffer, count, source);
 			return;
@@ -1289,6 +1292,11 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 
 #ifdef HAVE_HEALPIX
 			nvtxRangePushA("HEALPix output");
+			if (cuda_aware_mpi_active && !healpix_cuda_aware_mpi_active && !healpix_staging_override_reported)
+			{
+				COUT << COLORTEXT_YELLOW << " /!\\ warning" << COLORTEXT_RESET << ": HEALPix communication is using host staging because GEVOLUTION_HEALPIX_DISABLE_CUDA_AWARE_MPI is set." << endl;
+				healpix_staging_override_reported = true;
+			}
 			bytes = 0;
 			bytes2 = 0;
 
@@ -1928,7 +1936,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 
 					if (total_send_count > 0)
 					{
-						if (!cuda_aware_mpi_active)
+						if (!healpix_cuda_aware_mpi_active)
 						{
 							host_send_workspace.resize(total_send_count);
 							send_workspace = host_send_workspace.data();
@@ -1967,7 +1975,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 							int64_t send_offset = 0;
 							for (int sidx = 0; sidx < (int) send_segments[dest].size(); sidx++)
 							{
-								cudaMemcpyKind copy_kind = cuda_aware_mpi_active ? cudaMemcpyDeviceToDevice : cudaMemcpyDeviceToHost;
+								cudaMemcpyKind copy_kind = healpix_cuda_aware_mpi_active ? cudaMemcpyDeviceToDevice : cudaMemcpyDeviceToHost;
 								healpix_cuda_check(cudaMemcpy((void *) (sendbuf[dest] + send_offset), (void *) (pixbuf[j][4] + send_segments[dest][sidx].pixbuf_offset), send_segments[dest][sidx].count * sizeof(Real), copy_kind), "write buffer pack");
 								send_offset += send_segments[dest][sidx].count;
 							}
