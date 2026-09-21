@@ -1104,6 +1104,10 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 	{
 		if (cuda_aware_mpi_active)
 		{
+			// CUDA device-to-device copies and accumulation kernels can still be
+			// running when the host reaches MPI_Send. Complete the default stream
+			// before MPI starts reading the device buffer.
+			healpix_cuda_check(cudaStreamSynchronize(0), "neighbor pixel buffer before MPI send");
 			parallel.send_dim0<Real>(device_buffer, count, destination);
 			return;
 		}
@@ -1116,6 +1120,7 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 	{
 		if (cuda_aware_mpi_active)
 		{
+			healpix_cuda_check(cudaStreamSynchronize(0), "neighbor pixel buffer before MPI send");
 			parallel.send_dim1<Real>(device_buffer, count, destination);
 			return;
 		}
@@ -1971,6 +1976,19 @@ void writeLightcones(metadata & sim, cosmology & cosmo, const double fourpiG, co
 								healpix_cuda_check(cudaMemcpy((void *) (sendbuf[dest] + send_offset), (void *) (pixbuf[j][4] + send_segments[dest][sidx].pixbuf_offset), send_segments[dest][sidx].count * sizeof(Real), copy_kind), "write buffer pack");
 								send_offset += send_segments[dest][sidx].count;
 							}
+						}
+					}
+
+					// Device-to-device cudaMemcpy does not synchronize with the host.
+					// Finish packing every destination before MPI_Isend can read any
+					// part of the shared device workspace.
+					if (cuda_aware_mpi_active && total_send_count > 0)
+						healpix_cuda_check(cudaStreamSynchronize(0), "writer send buffers before MPI");
+
+					for (int dest = 0; dest < parallel.size(); dest++)
+					{
+						if (send_counts[dest] > 0)
+						{
 							requests.push_back(MPI_Request());
 							parallel.isend<Real>(sendbuf[dest], (int) send_counts[dest], dest, &requests.back());
 						}
